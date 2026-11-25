@@ -303,3 +303,5 @@ baseline mode — that is what PipeSentry adds.
 | Windows | `python run.py setup` then `python run.py scan <folder>` (or double-click `run.bat`) |
 
 `run.py` picks the right venv Python for the OS automatically.
+
+License: MIT — see LICENSE
