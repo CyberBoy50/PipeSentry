@@ -29,7 +29,7 @@ needs internet.
 git clone https://github.com/CyberBoy50/PipeSentry.git
 cd PipeSentry
 python run.py setup        # creates a venv, installs PyYAML + colorama
-python run.py scan test_workflows/bad     # 38 findings, score 0/100 (F)
+python run.py scan test_workflows/bad     # 39 findings, score 0/100 (F)
 python run.py scan test_workflows/clean   # 0 findings, score 100/100 (A)
 python run.py test         # 72 step tests — all should pass
 ```
@@ -44,7 +44,7 @@ python pipesentry.py path/to/pipelines
 
 Windows: double-click `run.bat`. Linux / macOS: `./run.sh`.
 
-## The checks (20 rules)
+## The checks (21 rules)
 
 | Rule | Severity | Check |
 |------|----------|-------|
@@ -68,6 +68,7 @@ Windows: double-click `run.bat`. Linux / macOS: `./run.sh`.
 | PG-018 | High | `secrets: inherit` exposes all secrets |
 | PG-019 | Medium | Remote script execution (`curl \| sh`) |
 | PG-020 | High | Pinned SHA does not match its tag, or does not exist upstream (`--verify-online` only) |
+| PG-021 | High | Action name is a typosquat of a well-known action (e.g. `actions/checkou` vs `actions/checkout`) |
 
 Severity details: PG-001 drops to High for a plain checkout with no
 `ref:` (the safety then depends on the checkout version); PG-004 drops
@@ -110,7 +111,7 @@ pipesentry <path> [-o report.txt] [--json report.json]
   its other findings and notes the skip.
 - `--structure` — print the parsed structure (triggers, jobs, steps)
   without running any checks.
-- `--list-checks` — list all 20 rules with severities.
+- `--list-checks` — list all 21 rules with severities.
 
 ## Baseline mode (for legacy repos)
 
@@ -156,7 +157,7 @@ Demo order for a presentation: **7** (doctor) → **5** (checks) →
 pipesentry.py          # the tool: parsing, checks, scoring, reports, menu
 run.py                 # launcher: setup / scan / test / doctor / checks
 run.bat / run.sh       # one-click launch (Windows / Linux-macOS)
-test_pipesentry.py     # 8 step tests (80 checks, incl. online PG-020)
+test_pipesentry.py     # 9 step tests (90 checks, incl. online PG-020 and typosquat PG-021)
 requirements.txt       # pyyaml>=6.0, colorama>=0.4.6
 test_workflows/bad/    # vulnerable workflows + Jenkinsfile (planted flaws)
 test_workflows/clean/  # hardened mirror (must scan clean)
@@ -187,18 +188,24 @@ RESEARCH_CLI_TOOLS.md  RESEARCH_IMPLEMENTATION.md
 4. **Secret analysis** — per step, the tool collects which env vars
    hold secrets (step `env:` + job `env:` + workflow `env:`), then
    scans the step's `run:` for prints of those names.
-5. **Jenkinsfile analysis** — line-oriented regex scanning, including
+5. **Typosquat analysis (v1.2, PG-021)** — every remote `uses:` name is
+   compared with a curated list of 44 well-known actions
+   (`difflib.SequenceMatcher`); a name that is close but not exact
+   (ratio ≥ 0.85, e.g. `actions/checkou` vs `actions/checkout`) is
+   flagged, while exact matches and unrelated custom actions are not.
+6. **Jenkinsfile analysis** — line-oriented regex scanning, including
    a small state machine for multi-line `sh """..."""` blocks.
-6. **Report** — text (file, line, severity, evidence, fix) and JSON,
+7. **Report** — text (file, line, severity, evidence, fix) and JSON,
    with a score, a grade and a defensive lesson.
 
 ## Limits (stated honestly)
 
 - The scanner is offline by default: `--verify-online` (v1.1, PG-020)
   checks a pinned SHA against its `# vX.Y.Z` tag and against the
-  upstream commit list, but it cannot tell whether `owner/repo` is a
-  typosquat — that needs a known-actions list. Online checks are also
-  limited to 60 GitHub API requests/hour without a token
+  upstream commit list. Typosquats are checked offline (v1.2, PG-021)
+  against a curated list of 44 well-known actions — an attacker can
+  still typosquat an action that is not on that list. Online checks
+  are also limited to 60 GitHub API requests/hour without a token
   (`GITHUB_TOKEN` raises it to 5,000/hour).
 - A Jenkinsfile is scanned as text, not parsed as Groovy, so it cannot
   follow control flow; Jenkinsfile findings are phrased as "pattern

@@ -1,8 +1,8 @@
 {
   "tool": "PipeSentry",
-  "version": "1.0",
+  "version": "1.2",
   "author": "CyberBoy50",
-  "scanned_at": "2026-11-25 19:56:21",
+  "scanned_at": "2026-11-25 16:04:23",
   "scanned_path": "test_workflows/clean",
   "files": 2,
   "workflows": 1,

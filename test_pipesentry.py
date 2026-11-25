@@ -10,6 +10,8 @@ Step 6: permissions check + report (file, line, severity, fix).
 Step 7: full run on the test folders + Jenkinsfile + baseline mode.
 Step 8: online SHA verification (v1.1, PG-020) — needs internet to
 api.github.com; skips cleanly when offline.
+Step 9: typosquat check (v1.2, PG-021) — close-but-not-exact action
+names against a curated list of well-known actions.
 
 Usage: python test_pipesentry.py   (or: python run.py test)
 """
@@ -277,13 +279,13 @@ def step7():
     print("\nStep 7 — full run on the test folders")
     code, findings, score, grade = scan(BAD_DIR)
     # PG-020 needs --verify-online (network), so offline it cannot fire.
-    check("bad folder: all 19 offline rules fire",
+    check("bad folder: all 20 offline rules fire",
           rules_of(findings) == set(ps.RULES) - {"PG-020"})
-    check("bad folder: 38 findings", len(findings) == 38)
+    check("bad folder: 39 findings", len(findings) == 39)
     counts = ps.summary_counts(findings)
-    check("bad folder: 5 critical, 19 high, 12 medium, 2 low",
+    check("bad folder: 5 critical, 20 high, 12 medium, 2 low",
           (counts["critical"], counts["high"], counts["medium"],
-           counts["low"]) == (5, 19, 12, 2))
+           counts["low"]) == (5, 20, 12, 2))
     check("bad folder: score 0/100 grade F", score == 0 and grade == "F")
     check("bad folder: exit code 2", code == 2)
     code, findings, score, grade = scan(CLEAN_DIR)
@@ -322,8 +324,8 @@ def step7():
     ps.save_baseline(base_path, clean_findings, repo=CLEAN_DIR)
     by_key, by_hash = ps.load_baseline(base_path)
     new, _known = ps.split_new_vs_known(bad_findings, by_key, by_hash)
-    check("baseline: bad folder vs clean baseline — all 38 are new",
-          len(new) == 38)
+    check("baseline: bad folder vs clean baseline — all 39 are new",
+          len(new) == 39)
     code, _f, _s, _g = scan(BAD_DIR, baseline=base_path)
     check("baseline: exit code 2 when new criticals exist", code == 2)
     # Baseline never stores secret values.
@@ -405,15 +407,21 @@ def step8():
         code, findings, score, grade = scan(CLEAN_DIR, verify_online=True)
         check("clean folder verifies online: 0 findings", findings == [])
         check("clean folder verifies online: exit 0", code == 0)
-        # Bad folder: the bogus pin fires PG-020 (39 findings online).
+        # Bad folder: the bogus pin fires PG-020 (41 findings online) —
+        # and so does the typosquat pin, whose repo actions/checkou does
+        # not exist upstream at all.
         code, findings, score, grade = scan(BAD_DIR, verify_online=True)
-        check("bad folder online: PG-020 fires once",
-              len(of_rule(findings, "PG-020")) == 1)
-        check("bad folder online: 39 findings", len(findings) == 39)
+        check("bad folder online: PG-020 fires twice",
+              len(of_rule(findings, "PG-020")) == 2)
+        check("bad folder online: 41 findings", len(findings) == 41)
         check("bad folder online: PG-020 line is the bogus pin",
               any(x["line"] == find_line(
                   os.path.join(BAD_DIR, "ci.yml"),
                   "0000000000000000000000000000000000000000")
+                  for x in of_rule(findings, "PG-020")))
+        check("bad folder online: PG-020 line is the typo pin",
+              any(x["line"] == find_line(
+                  os.path.join(BAD_DIR, "ci.yml"), "actions/checkou@")
                   for x in of_rule(findings, "PG-020")))
     finally:
         if old is None:
@@ -423,8 +431,52 @@ def step8():
         server.shutdown()
 
 
+def _typo_workflow(uses):
+    """A minimal workflow with one step using the given action."""
+    return ps.load_workflow(
+        "name: t\n"
+        "on: push\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: %s\n" % uses)
+
+
+def step9():
+    print("\nStep 9 — typosquat check (PG-021)")
+    # Exact known action: never flagged.
+    f = ps.check_typosquat(_typo_workflow("actions/checkout@v4"), "t.yml")
+    check("exact known action does not flag", f == [])
+    # One-letter typo: flags once, on the uses: line, naming both.
+    f = ps.check_typosquat(_typo_workflow("actions/checkou@v4"), "t.yml")
+    check("close typo flags once", len(of_rule(f, "PG-021")) == 1)
+    check("typosquat evidence names both actions",
+          "actions/checkou" in of_rule(f, "PG-021")[0]["evidence"]
+          and "actions/checkout" in of_rule(f, "PG-021")[0]["evidence"])
+    check("typosquat line is the uses: line",
+          of_rule(f, "PG-021")[0]["line"] == 7)
+    # Unrelated custom action: far from every known action, no flag.
+    f = ps.check_typosquat(_typo_workflow("my-org/my-action@v4"), "t.yml")
+    check("unrelated custom action does not flag", f == [])
+    # Same owner, unrelated repo: below the 0.85 threshold, no flag.
+    f = ps.check_typosquat(_typo_workflow("actions/foobar@v4"), "t.yml")
+    check("below-threshold name does not flag", f == [])
+    # The bad fixture: PG-021 fires once, on the typo step.
+    _c, findings, _s, _g = scan(BAD_DIR)
+    check("bad folder: PG-021 fires once",
+          len(of_rule(findings, "PG-021")) == 1)
+    check("bad folder: PG-021 line is the typo step",
+          any(x["line"] == find_line(
+              os.path.join(BAD_DIR, "ci.yml"), "actions/checkou@")
+              for x in of_rule(findings, "PG-021")))
+    # The clean fixture: only exact known actions, no PG-021.
+    _c, findings, _s, _g = scan(CLEAN_DIR)
+    check("clean folder: no PG-021", of_rule(findings, "PG-021") == [])
+
+
 def run_all_tests():
-    print("PipeSentry step tests — 7 steps from the build plan + step 8")
+    print("PipeSentry step tests — 7 steps from the build plan + steps 8-9")
     print("=" * 58)
     step1()
     step2()
@@ -434,6 +486,7 @@ def run_all_tests():
     step6()
     step7()
     step8()
+    step9()
     print()
     print("=" * 58)
     print("PASSED: %d   FAILED: %d" % (PASSED, FAILED))

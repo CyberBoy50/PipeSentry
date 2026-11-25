@@ -14,7 +14,7 @@ credentials, no live cluster.
 
 ```bash
 python run.py setup
-python run.py scan test_workflows/bad      # 38 findings, 0/100 (F)
+python run.py scan test_workflows/bad      # 39 findings, 0/100 (F)
 python run.py scan test_workflows/clean    # 0 findings, 100/100 (A)
 ```
 
@@ -115,10 +115,19 @@ attack class that tags leave open.
 
 ## Test results
 
-`python run.py test` — **80 checks, all pass** (8 steps: the 7 from the
-build plan, plus step 8 for online SHA verification). Bad folder: 38
-findings offline (5 critical, 19 high, 12 medium, 2 low), 39 with
-`--verify-online` (PG-020 fires once, on the bogus pin in `ci.yml`);
-score 0/100, grade F, exit code 2. Clean folder: 0 findings, score
-100/100, grade A, exit code 0. Every finding's line number is asserted
-against the fixture file it came from.
+`python run.py test` — **90 checks, all pass** (9 steps: the 7 from the
+build plan, plus step 8 for online SHA verification and step 9 for the
+typosquat check). Bad folder: 39 findings offline (5 critical, 20 high,
+12 medium, 2 low), 41 with `--verify-online` (PG-020 fires twice — on
+the bogus pin and on the typo pin in `ci.yml`); score 0/100, grade F,
+exit code 2. Clean folder: 0 findings, score 100/100, grade A, exit
+code 0. Every finding's line number is asserted against the fixture
+file it came from.
+
+**PG-021 (v1.2) — the typosquat.** The bad `ci.yml` also uses
+`actions/checkou@eef61447… # v4.2.1` — one letter missing from
+`actions/checkout`, pinned with the real checkout SHA on purpose, so
+offline it fires PG-021 only (no PG-005). The check compares every
+remote `uses:` name with 44 well-known actions; `checkou` scores 0.97
+against `checkout`, while exact names and unrelated custom actions
+never flag.

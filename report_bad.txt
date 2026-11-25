@@ -1,13 +1,13 @@
 ================================================================
 PipeSentry Report — CI/CD Pipeline Security Scan
 ================================================================
-Date: 2026-11-25 19:56:21
-Tool: PipeSentry 1.0 (author: CyberBoy50)
+Date: 2026-11-25 16:04:23
+Tool: PipeSentry 1.2 (author: CyberBoy50)
 Scanned: test_workflows/bad
 
-Files: 5 (workflows 4, Jenkinsfiles 1, jobs 7, steps 17)
+Files: 5 (workflows 4, Jenkinsfiles 1, jobs 7, steps 19)
 Score: 0/100 (grade F)
-Findings: 38 (critical 5, high 19, medium 12, low 2)
+Findings: 39 (critical 5, high 20, medium 12, low 2)
 
 ----------------------------------------------------------------
 [HIGH] PG-015 — Hardcoded credential in Jenkinsfile
@@ -143,85 +143,92 @@ Evidence: Third-party action tj-actions/changed-files@v45 is not pinned — pin 
 Fix: Pin to the full 40-char commit SHA, keep the version as a # vX.Y.Z comment. (tj-actions, CVE-2025-30066: attackers rewrote version tags and 23,000+ repos ran malicious code.)
 
 ----------------------------------------------------------------
+[HIGH] PG-021 — Action name is a typosquat of a well-known action
+File: ci.yml (line 25)
+Object: job=build:step=4:action=actions/checkou
+Evidence: uses: actions/checkou@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 is very close to the well-known action actions/checkout — possible typosquat
+Fix: Use the exact official action name; verify the owner/repo on the action's official page before trusting it.
+
+----------------------------------------------------------------
 [HIGH] PG-005 — Unpinned third-party action
-File: ci.yml (line 23)
-Object: job=build:step=3:action=docker://alpine:3.19
+File: ci.yml (line 27)
+Object: job=build:step=5:action=docker://alpine:3.19
 Evidence: Docker action docker://alpine:3.19 is not pinned by digest — use docker://image@sha256:<digest>
 Fix: Pin to the full 40-char commit SHA, keep the version as a # vX.Y.Z comment. (tj-actions, CVE-2025-30066: attackers rewrote version tags and 23,000+ repos ran malicious code.)
 
 ----------------------------------------------------------------
 [MEDIUM] PG-007 — Secret echoed to logs
-File: ci.yml (line 25)
-Object: job=build:step=4:var=MY_TOKEN
+File: ci.yml (line 29)
+Object: job=build:step=6:var=MY_TOKEN
 Evidence: Secret-bearing variable echoed to logs: MY_TOKEN
 Fix: Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it.
 
 ----------------------------------------------------------------
 [MEDIUM] PG-007 — Secret echoed to logs
-File: ci.yml (line 27)
-Object: job=build:step=5:expr
+File: ci.yml (line 31)
+Object: job=build:step=7:expr
 Evidence: Secret interpolated directly in run: (echo ${{ secrets.DEPLOY_KEY }}) — GitHub masks registered secrets, but substrings and encoded forms are not masked
 Fix: Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it.
 
 ----------------------------------------------------------------
 [HIGH] PG-007 — Secret echoed to logs
-File: ci.yml (line 29)
-Object: job=build:step=6:printenv
+File: ci.yml (line 33)
+Object: job=build:step=8:printenv
 Evidence: printenv/env dumps the whole environment including secrets
 Fix: Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it.
 
 ----------------------------------------------------------------
 [HIGH] PG-007 — Secret echoed to logs
-File: ci.yml (line 31)
-Object: job=build:step=7:set-x
+File: ci.yml (line 35)
+Object: job=build:step=9:set-x
 Evidence: set -x prints every command with variables expanded — secrets leak into the log
 Fix: Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it.
 
 ----------------------------------------------------------------
 [HIGH] PG-007 — Secret echoed to logs
-File: ci.yml (line 33)
-Object: job=build:step=8:encoded
+File: ci.yml (line 37)
+Object: job=build:step=10:encoded
 Evidence: Secret piped through an encoder (echo $MY_TOKEN | base64) — encoded forms bypass GitHub's log masking
 Fix: Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it.
 
 ----------------------------------------------------------------
 [MEDIUM] PG-007 — Secret echoed to logs
-File: ci.yml (line 33)
-Object: job=build:step=8:var=MY_TOKEN
+File: ci.yml (line 37)
+Object: job=build:step=10:var=MY_TOKEN
 Evidence: Secret-bearing variable echoed to logs: MY_TOKEN
 Fix: Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it.
 
 ----------------------------------------------------------------
 [MEDIUM] PG-019 — Remote script execution (curl | sh)
-File: ci.yml (line 35)
-Object: job=build:step=9:curl-pipe
+File: ci.yml (line 39)
+Object: job=build:step=11:curl-pipe
 Evidence: Remote script piped straight into a shell (curl https://example.com/install.sh | sh) — download it, verify its hash, then run the local copy
 Fix: Download the script, verify its hash, then run the local copy — never pipe a remote URL straight into a shell.
 
 ----------------------------------------------------------------
 [HIGH] PG-001 — pull_request_target checks out PR head code
-File: ci.yml (line 39)
+File: ci.yml (line 43)
 Object: job=package:step=checkout
 Evidence: actions/checkout with no ref: in a pull_request_target workflow (checkout unpinned) — the safety of this depends on the checkout version
 Fix: Split the workflow: untrusted code under pull_request, privileged work under workflow_run — never check out fork code in a pull_request_target job.
 
 ----------------------------------------------------------------
 [MEDIUM] PG-006 — Unpinned first-party action
-File: ci.yml (line 39)
+File: ci.yml (line 43)
 Object: job=package:step=0:action=actions/checkout
 Evidence: First-party action actions/checkout@v4 is not pinned — tags move; pin to the full 40-char commit SHA
 Fix: Pin to the full 40-char commit SHA.
 
 ----------------------------------------------------------------
 [LOW] PG-013 — Checkout persists credentials + artifact upload
-File: ci.yml (line 39)
+File: ci.yml (line 43)
 Object: job=package
 Evidence: Job package: checkout persists the GITHUB_TOKEN and the job uploads an artifact — the token can end up in the artifact
 Fix: Set persist-credentials: false on the checkout step.
 
 ----------------------------------------------------------------
 [MEDIUM] PG-006 — Unpinned first-party action
-File: ci.yml (line 42)
+File: ci.yml (line 46)
 Object: job=package:step=1:action=actions/upload-artifact
 Evidence: First-party action actions/upload-artifact@v4 is not pinned — tags move; pin to the full 40-char commit SHA
 Fix: Pin to the full 40-char commit SHA.

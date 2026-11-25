@@ -18,9 +18,10 @@ It works on FILES ONLY — no live cluster, no credentials, no network.
 Point it at your own pipeline files (or a folder you exported), never
 at a repository you do not own.
 
-Version: 1.0
+Version: 1.2
 """
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -31,7 +32,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "1.1"
+VERSION = "1.2"
 AUTHOR = "CyberBoy50"
 
 try:
@@ -267,7 +268,7 @@ def banner():
     # TraceRecon-style box under the banner, like SSTIProbe / RBACLens.
     print(f"{C.RED}")
     print("┌" + "─" * 50 + "┐")
-    print("│" + ("PipeSentry v" + VERSION + " — files + online SHA check").center(50) + "│")
+    print("│" + ("PipeSentry v" + VERSION + " — files + online SHA + typosquat").center(50) + "│")
     print("│" + "For authorized use only".center(50) + "│")
     print("└" + "─" * 50 + "┘")
     print(f"{C.RST}", end="")
@@ -338,6 +339,10 @@ RULES = {
                "Re-pin to the SHA the tag actually points at (and fix the "
                "# vX.Y.Z comment if it is stale). A SHA that does not exist "
                "upstream is bogus — re-pin from the action's releases page."),
+    "PG-021": ("Action name is a typosquat of a well-known action",
+               "high",
+               "Use the exact official action name; verify the owner/repo "
+               "on the action's official page before trusting it."),
 }
 
 FIRST_PARTY = {"actions", "github"}   # GitHub-authored actions
@@ -966,6 +971,113 @@ def check_pinning(data, file, strict=False, raw_lines=None, pinned_out=None):
     return findings
 
 
+# ---------------------------------------------------------------- typosquat check
+# PG-021 (v1.2) — an action name that is one typo away from a famous one.
+# Attackers publish look-alike actions (actions/checkou, tj-actions/
+# changed-file) and wait for a tired developer to copy the wrong name.
+# A close-but-not-exact match against this curated list of well-known
+# actions is the signal. Exact matches never flag; unrelated custom
+# actions (my-org/my-action) score far below the threshold and never
+# flag either.
+KNOWN_ACTIONS = [
+    "actions/checkout",
+    "actions/setup-node",
+    "actions/setup-python",
+    "actions/setup-java",
+    "actions/setup-go",
+    "actions/setup-dotnet",
+    "actions/setup-ruby",
+    "actions/cache",
+    "actions/upload-artifact",
+    "actions/download-artifact",
+    "actions/github-script",
+    "actions/labeler",
+    "actions/stale",
+    "actions/dependency-review-action",
+    "actions/configure-pages",
+    "actions/deploy-pages",
+    "actions/upload-pages-artifact",
+    "actions/attest-build-provenance",
+    "actions/create-github-app-token",
+    "actions/first-interaction",
+    "docker/build-push-action",
+    "docker/login-action",
+    "docker/setup-buildx-action",
+    "docker/setup-qemu-action",
+    "docker/metadata-action",
+    "tj-actions/changed-files",
+    "softprops/action-gh-release",
+    "peter-evans/create-pull-request",
+    "peter-evans/create-or-update-comment",
+    "github/codeql-action/init",
+    "github/codeql-action/analyze",
+    "github/codeql-action/upload-sarif",
+    "stefanzweifel/git-auto-commit-action",
+    "peaceiris/actions-gh-pages",
+    "JamesIves/github-pages-deploy-action",
+    "aws-actions/configure-aws-credentials",
+    "aws-actions/amazon-ecr-login",
+    "google-github-actions/auth",
+    "azure/login",
+    "hashicorp/setup-terraform",
+    "codecov/codecov-action",
+    "ossf/scorecard-action",
+    "step-security/harden-runner",
+    "github/super-linter",
+]
+
+TYPO_RATIO = 0.85  # SequenceMatcher ratio: close, but not exact
+
+
+def closest_known_action(action):
+    """Best (ratio, known) match for an action name, case-insensitive.
+    Returns (0.0, None) when the name matches a known action exactly
+    (ratio 1.0 is never a typosquat)."""
+    name = action.lower()
+    best_ratio, best_known = 0.0, None
+    for known in KNOWN_ACTIONS:
+        ratio = difflib.SequenceMatcher(None, name, known.lower()).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_known = ratio, known
+    return best_ratio, best_known
+
+
+def check_typosquat(data, file):
+    """PG-021 — every remote uses: checked against KNOWN_ACTIONS.
+    Local ./ actions and docker:// are skipped (they are not GitHub
+    action names, so they cannot typosquat one)."""
+    findings = []
+
+    def check_one(uses, line, obj):
+        parsed = parse_uses(uses)
+        if parsed is None or parsed["kind"] != "remote":
+            return
+        action = "%s/%s%s" % (parsed.get("owner") or "",
+                              parsed.get("repo") or "",
+                              parsed.get("path") or "")
+        ratio, known = closest_known_action(action)
+        if TYPO_RATIO <= ratio < 1.0:
+            findings.append(make_finding(
+                file, line, "PG-021", "high", obj,
+                "uses: %s@%s is very close to the well-known action %s "
+                "— possible typosquat" % (
+                    action, parsed.get("ref") or "(no ref)", known),
+                key_obj=obj))
+
+    for job_id, i, step, sline in iter_steps(data):
+        uses = step.get("uses")
+        if isinstance(uses, str) and uses.strip():
+            check_one(uses, scalar_line(uses, sline),
+                      "job=%s:step=%d:action=%s"
+                      % (job_id, i, uses.split("@")[0].strip()))
+    for job_id, job, jline in iter_jobs(data):
+        uses = job.get("uses")
+        if isinstance(uses, str) and uses.strip():
+            check_one(uses, scalar_line(uses, jline),
+                      "job=%s:action=%s" % (job_id, uses.split("@")[0].strip()))
+    return findings
+
+
 # ---------------------------------------------------------------- online check
 # PG-020 (v1.1) — verify a pinned SHA against GitHub. Two questions:
 #   1. Does the SHA match the # vX.Y.Z comment on the same line?
@@ -1341,6 +1453,7 @@ def check_workflow(data, file, strict=False, raw_lines=None, pinned_out=None):
     findings += check_secret_echo(data, file)
     findings += check_pinning(data, file, strict=strict,
                               raw_lines=raw_lines, pinned_out=pinned_out)
+    findings += check_typosquat(data, file)
     findings += check_permissions(data, file)
     findings += check_misc_workflow(data, file, triggers)
     return findings

@@ -114,12 +114,12 @@ planted flaw is found, with the right severity and the right line.
 `python run.py scan test_workflows/clean`, plus the Jenkinsfile folders
 and baseline mode (`--baseline-write` / `--baseline`).
 
-**Test:** Step 7 — bad folder: all 19 offline rules fire, 38 findings
-(5 critical, 19 high, 12 medium, 2 low), score 0/100 grade F, exit
+**Test:** Step 7 — bad folder: all 20 offline rules fire, 39 findings
+(5 critical, 20 high, 12 medium, 2 low), score 0/100 grade F, exit
 code 2; clean folder: 0 findings, score 100/100 grade A, exit code 0;
 bad Jenkinsfile: PG-015 ×5, PG-016 ×3, PG-017 ×1; clean Jenkinsfile: 0;
 baseline: same folder again reports 0 new findings, a clean baseline
-makes all 38 findings new, and the baseline file stores no secret
+makes all 39 findings new, and the baseline file stores no secret
 values.
 
 ## Step 8 — Online SHA verification (v1.1, PG-020, PDF ke baad ka upgrade)
@@ -132,7 +132,9 @@ exists. Mismatch or missing SHA → PG-020 (High). The clean fixture
 uses real SHAs (actions/checkout v4.2.1 and tj-actions/changed-files
 v45, taken from the API), so it still scores 100/100; the bad fixture
 has one bogus pin (`tj-actions/changed-files@0000… # v45`), so the
-online bad scan is 39 findings.
+online bad scan is 39 findings in v1.1 (41 in v1.2 — the typo pin in
+`ci.yml` also fires PG-020, because `actions/checkou` does not exist
+upstream at all).
 
 **How:** `pipesentry.py <folder> --verify-online`. Only stdlib urllib —
 no new dependency. Unauthenticated limit is 60 requests/hour; set
@@ -142,14 +144,42 @@ rate-limited, the scan keeps its other findings and notes the skip.
 
 **Test:** Step 8 — the tag lookups resolve to the real SHAs, a bogus
 SHA does not exist upstream, the clean folder verifies with 0 findings,
-the bad folder fires PG-020 once (39 findings). The step tests run the
-full online flow against a local fake GitHub API server, so they pass
-even when the real API is rate-limited.
+the bad folder fires PG-020 twice (41 findings in v1.2). The step
+tests run the full online flow against a local fake GitHub API server,
+so they pass even when the real API is rate-limited.
+
+## Step 9 — Typosquat check (v1.2, PG-021, PDF ke baad ka upgrade)
+
+**What:** an action name that is one typo away from a famous one is a
+supply-chain trap — attackers publish look-alike actions
+(`actions/checkou`, `tj-actions/changed-file`) and wait for a tired
+developer to copy the wrong name. PG-021 (High) compares every remote
+`uses:` name with a curated list of 44 well-known actions
+(`actions/checkout`, `actions/setup-node`, `docker/build-push-action`,
+`tj-actions/changed-files`, `github/codeql-action/analyze`, and more)
+using `difflib.SequenceMatcher`: a name that scores 0.85 or higher
+against a known action, but is not an exact match, is flagged. Exact
+matches never flag, and unrelated custom actions (`my-org/my-action`,
+ratio 0.58) never flag either. Local `./` actions and `docker://`
+are skipped — they are not GitHub action names.
+
+**How:** `check_typosquat()` in `pipesentry.py`, wired into
+`check_workflow()` like every other rule — so it appears in text and
+JSON reports, `--list-checks`, scoring (High, −10) and the menu checks
+list. Only stdlib `difflib` — no new dependency. The bad fixture has
+one typo step (`actions/checkou@eef61447… # v4.2.1`, pinned with the
+real checkout SHA on purpose, so offline it fires PG-021 only).
+
+**Test:** Step 9 — exact known action does not flag, a close typo
+flags once with the right line and both names in the evidence, an
+unrelated custom action does not flag, a below-threshold name
+(`actions/foobar`, ratio 0.69) does not flag, the bad folder fires
+PG-021 once, the clean folder fires none.
 
 ## After the build
 
-1. `python run.py test` — 80 checks, all pass.
-2. `python run.py scan test_workflows/bad` — see the 38 findings.
+1. `python run.py test` — 90 checks, all pass.
+2. `python run.py scan test_workflows/bad` — see the 39 findings.
 3. `python run.py scan test_workflows/clean` — see the clean pass.
 4. Point it at your own pipeline folder: `python run.py scan <folder>`.
 5. Use `--fail-on high` as a CI gate, and `--baseline-write` /

@@ -1,8 +1,8 @@
 ================================================================
 PipeSentry Report — CI/CD Pipeline Security Scan
 ================================================================
-Date: 2026-11-25 19:56:21
-Tool: PipeSentry 1.0 (author: CyberBoy50)
+Date: 2026-11-25 16:04:23
+Tool: PipeSentry 1.2 (author: CyberBoy50)
 Scanned: test_workflows/clean
 
 Files: 2 (workflows 1, Jenkinsfiles 1, jobs 1, steps 4)
