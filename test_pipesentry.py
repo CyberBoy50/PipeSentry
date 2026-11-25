@@ -15,6 +15,8 @@ names against a curated list of well-known actions.
 
 Usage: python test_pipesentry.py   (or: python run.py test)
 """
+import contextlib
+import io
 import json
 import os
 import sys
@@ -273,6 +275,24 @@ def step6():
           all(set(("file", "line", "rule", "severity", "fix")) <= set(x)
               for x in data["findings"]))
     check("JSON report score matches the text run", data["score"] == 0)
+    # v1.3 — explicit authorized-use responsibility disclaimer.
+    check("tool version is 1.3", ps.VERSION == "1.3")
+    check("text report carries the disclaimer verbatim",
+          ps.DISCLAIMER in report)
+    check("JSON report carries the disclaimer field verbatim",
+          data.get("disclaimer") == ps.DISCLAIMER)
+    check("disclaimer text is the exact authorized-use wording",
+          ps.DISCLAIMER.startswith("DISCLAIMER — AUTHORIZED USE ONLY.")
+          and "PECA 2016 in Pakistan" in ps.DISCLAIMER)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ps.banner()
+    banner_out = buf.getvalue()
+    check("banner shows the disclaimer",
+          "DISCLAIMER — AUTHORIZED USE ONLY" in banner_out
+          and "PECA 2016 in Pakistan" in banner_out)
+    check("banner still shows the version",
+          "Version 1.3" in banner_out)
 
 
 def step7():

@@ -8,6 +8,14 @@ pipeline file is a flaw in the build itself.
 
 **Author:** CyberBoy50
 
+**Current version:** 1.3
+
+## Legal — authorized use only
+
+DISCLAIMER — AUTHORIZED USE ONLY. This tool was built for ethical, authorized security testing only. You are using it on your own responsibility. The authors are not responsible for how you use it, or for anything that happens because of your use. Only test systems, code, and data you own or have explicit written permission to test — testing anything else may be illegal (for example, PECA 2016 in Pakistan).
+
+The same disclaimer is printed in the tool's banner and written into every report it generates (text and JSON). Version 1.3 adds this explicit disclaimer only; no detection logic, rule, finding, score or behaviour changed.
+
 ## What it scans
 
 Two input kinds, in one tool, one report format:
@@ -31,7 +39,7 @@ cd PipeSentry
 python run.py setup        # creates a venv, installs PyYAML + colorama
 python run.py scan test_workflows/bad     # 39 findings, score 0/100 (F)
 python run.py scan test_workflows/clean   # 0 findings, score 100/100 (A)
-python run.py test         # 72 step tests — all should pass
+python run.py test         # 96 step-test checks — all should pass
 ```
 
 Or run the tool directly (needs PyYAML installed):
@@ -157,7 +165,7 @@ Demo order for a presentation: **7** (doctor) → **5** (checks) →
 pipesentry.py          # the tool: parsing, checks, scoring, reports, menu
 run.py                 # launcher: setup / scan / test / doctor / checks
 run.bat / run.sh       # one-click launch (Windows / Linux-macOS)
-test_pipesentry.py     # 9 step tests (90 checks, incl. online PG-020 and typosquat PG-021)
+test_pipesentry.py     # 9 step tests (96 checks, incl. online PG-020 and typosquat PG-021)
 requirements.txt       # pyyaml>=6.0, colorama>=0.4.6
 test_workflows/bad/    # vulnerable workflows + Jenkinsfile (planted flaws)
 test_workflows/clean/  # hardened mirror (must scan clean)

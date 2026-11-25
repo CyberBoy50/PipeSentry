@@ -18,7 +18,7 @@ It works on FILES ONLY — no live cluster, no credentials, no network.
 Point it at your own pipeline files (or a folder you exported), never
 at a repository you do not own.
 
-Version: 1.2
+Version: 1.3
 """
 import argparse
 import difflib
@@ -32,8 +32,19 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "1.2"
+VERSION = "1.3"
 AUTHOR = "CyberBoy50"
+
+# Explicit responsibility disclaimer — printed in the banner, written
+# into every generated report (text + JSON) and quoted in the README.
+# Verbatim text; do not paraphrase.
+DISCLAIMER = ("DISCLAIMER — AUTHORIZED USE ONLY. This tool was built for "
+              "ethical, authorized security testing only. You are using it "
+              "on your own responsibility. The authors are not responsible "
+              "for how you use it, or for anything that happens because of "
+              "your use. Only test systems, code, and data you own or have "
+              "explicit written permission to test — testing anything else "
+              "may be illegal (for example, PECA 2016 in Pakistan).")
 
 try:
     import yaml
@@ -265,6 +276,18 @@ def banner():
     print(
         f"{C.YEL}      written permission to scan — your own repos or lab.{C.RESET}"
     )
+    # Explicit responsibility disclaimer (v1.3), wrapped to the banner.
+    for _line in (
+        "DISCLAIMER — AUTHORIZED USE ONLY. This tool was built",
+        "for ethical, authorized security testing only. You are",
+        "using it on your own responsibility. The authors are",
+        "not responsible for how you use it, or for anything",
+        "that happens because of your use. Only test systems,",
+        "code, and data you own or have explicit written",
+        "permission to test — testing anything else may be",
+        "illegal (for example, PECA 2016 in Pakistan).",
+    ):
+        print(f"{C.YEL}      {_line}{C.RESET}")
     # TraceRecon-style box under the banner, like SSTIProbe / RBACLens.
     print(f"{C.RED}")
     print("┌" + "─" * 50 + "┐")
@@ -1584,6 +1607,8 @@ def build_text_report(path, stats, findings, score, grade, errors):
     lines.append("Tool: PipeSentry %s (author: %s)" % (VERSION, AUTHOR))
     lines.append("Scanned: %s" % path)
     lines.append("")
+    lines.append(DISCLAIMER)
+    lines.append("")
     lines.append("Files: %d (workflows %d, Jenkinsfiles %d, jobs %d, "
                  "steps %d)" % (stats["files"], stats["workflows"],
                                 stats["jenkinsfiles"], stats["jobs"],
@@ -1628,6 +1653,7 @@ def build_json_report(path, stats, findings, score, grade, errors):
         "tool": "PipeSentry",
         "version": VERSION,
         "author": AUTHOR,
+        "disclaimer": DISCLAIMER,
         "scanned_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "scanned_path": path,
         "files": stats["files"],

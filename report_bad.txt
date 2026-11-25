@@ -1,9 +1,11 @@
 ================================================================
 PipeSentry Report — CI/CD Pipeline Security Scan
 ================================================================
-Date: 2026-11-25 16:04:23
-Tool: PipeSentry 1.2 (author: CyberBoy50)
+Date: 2026-11-25 19:23:52
+Tool: PipeSentry 1.3 (author: CyberBoy50)
 Scanned: test_workflows/bad
+
+DISCLAIMER — AUTHORIZED USE ONLY. This tool was built for ethical, authorized security testing only. You are using it on your own responsibility. The authors are not responsible for how you use it, or for anything that happens because of your use. Only test systems, code, and data you own or have explicit written permission to test — testing anything else may be illegal (for example, PECA 2016 in Pakistan).
 
 Files: 5 (workflows 4, Jenkinsfiles 1, jobs 7, steps 19)
 Score: 0/100 (grade F)
