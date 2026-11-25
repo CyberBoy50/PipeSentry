@@ -27,9 +27,11 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 
-VERSION = "1.0"
+VERSION = "1.1"
 AUTHOR = "CyberBoy50"
 
 try:
@@ -265,7 +267,7 @@ def banner():
     # TraceRecon-style box under the banner, like SSTIProbe / RBACLens.
     print(f"{C.RED}")
     print("┌" + "─" * 50 + "┐")
-    print("│" + ("PipeSentry v" + VERSION + " — files only, no network").center(50) + "│")
+    print("│" + ("PipeSentry v" + VERSION + " — files + online SHA check").center(50) + "│")
     print("│" + "For authorized use only".center(50) + "│")
     print("└" + "─" * 50 + "┘")
     print(f"{C.RST}", end="")
@@ -331,6 +333,11 @@ RULES = {
     "PG-019": ("Remote script execution (curl | sh)", "medium",
                "Download the script, verify its hash, then run the local "
                "copy — never pipe a remote URL straight into a shell."),
+    "PG-020": ("Pinned SHA does not match its tag, or does not exist upstream",
+               "high",
+               "Re-pin to the SHA the tag actually points at (and fix the "
+               "# vX.Y.Z comment if it is stale). A SHA that does not exist "
+               "upstream is bogus — re-pin from the action's releases page."),
 }
 
 FIRST_PARTY = {"actions", "github"}   # GitHub-authored actions
@@ -896,8 +903,11 @@ def check_secret_echo(data, file):
     return findings
 
 
-def check_pinning(data, file, strict=False):
-    """PG-005 / PG-006 — every uses: pinned to a full commit SHA?"""
+def check_pinning(data, file, strict=False, raw_lines=None, pinned_out=None):
+    """PG-005 / PG-006 — every uses: pinned to a full commit SHA?
+    Pinned actions are also collected into pinned_out (when given) for
+    the online check (PG-020): owner, repo, SHA, line, object, and the
+    # vX.Y.Z comment on the same raw line, if any."""
     findings = []
 
     def check_one(uses, line, obj):
@@ -916,6 +926,15 @@ def check_pinning(data, file, strict=False):
             return
         ref = parsed.get("ref") or ""
         if pin_status(ref) == "pinned":
+            if pinned_out is not None:
+                pinned_out.append({
+                    "owner": parsed.get("owner") or "",
+                    "repo": parsed.get("repo") or "",
+                    "ref": ref,
+                    "line": line,
+                    "obj": obj,
+                    "tag": comment_tag(raw_lines, line),
+                })
             return
         owner = parsed.get("owner") or ""
         action = "%s/%s" % (owner, parsed.get("repo") or "")
@@ -945,6 +964,139 @@ def check_pinning(data, file, strict=False):
             check_one(uses, scalar_line(uses, jline),
                       "job=%s:action=%s" % (job_id, uses.split("@")[0].strip()))
     return findings
+
+
+# ---------------------------------------------------------------- online check
+# PG-020 (v1.1) — verify a pinned SHA against GitHub. Two questions:
+#   1. Does the SHA match the # vX.Y.Z comment on the same line?
+#      (A tag is a mutable pointer — if it moved since the pin was
+#      written, the SHA and the tag disagree, and the comment is stale.)
+#   2. Does the SHA exist upstream at all? (A bogus SHA never ran
+#      anywhere — it is a typo, or the action repo was rewritten.)
+# Runs ONLY with --verify-online (or menu option 8): it needs internet,
+# and unauthenticated GitHub API calls are limited to 60/hour. Set
+# GITHUB_TOKEN (a classic token, no scopes needed) for 5,000/hour.
+# Uses only the standard library (urllib) — no new dependency.
+GITHUB_API = "https://api.github.com"
+# Test hook: PIPE_SENTRY_GITHUB_API overrides the API base URL, so the
+# step tests can run the online flow against a local fake server.
+TAG_COMMENT_RE = re.compile(r"#\s*(v?\d+(?:\.\d+)*)\s*$")
+
+
+def gh_url(path):
+    """Full API URL for a path, honouring the test override."""
+    base = os.environ.get("PIPE_SENTRY_GITHUB_API", GITHUB_API).rstrip("/")
+    return base + path
+
+
+def github_api_get(url, timeout=10):
+    """GET a GitHub API URL. Returns parsed JSON, or None on 404.
+    Raises ValueError on network failure, rate limit, or other errors."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "PipeSentry/%s" % VERSION,
+        "Accept": "application/vnd.github+json",
+    })
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        req.add_header("Authorization", "Bearer %s" % token)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        if exc.code == 403:
+            raise ValueError(
+                "GitHub API rate limit hit (403) — set GITHUB_TOKEN "
+                "for 5,000 requests/hour, or wait an hour.") from exc
+        raise ValueError("GitHub API error %s for %s" % (exc.code, url)) from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        raise ValueError("Cannot reach GitHub API (%s) — offline?" % exc) from exc
+
+
+def tag_commit_sha(owner, repo, tag, cache):
+    """The commit SHA a tag points at, or None if the tag does not exist.
+    Annotated tags point at a tag object first — resolve one more hop.
+    Results are cached per (owner, repo, tag) for the whole run."""
+    key = ("tag", owner, repo, tag)
+    if key in cache:
+        return cache[key]
+    ref = github_api_get(gh_url("/repos/%s/%s/git/refs/tags/%s"
+                                % (owner, repo, tag)))
+    sha = None
+    if ref is not None:
+        obj = ref.get("object") or {}
+        sha = obj.get("sha")
+        if obj.get("type") == "tag" and sha:
+            tag_obj = github_api_get(gh_url("/repos/%s/%s/git/tags/%s"
+                                            % (owner, repo, sha)))
+            if tag_obj is not None:
+                sha = (tag_obj.get("object") or {}).get("sha") or sha
+    cache[key] = sha
+    return sha
+
+
+def commit_exists(owner, repo, sha, cache):
+    """True if this SHA is a real commit upstream (cached per run)."""
+    key = ("commit", owner, repo, sha)
+    if key in cache:
+        return cache[key]
+    exists = github_api_get(gh_url("/repos/%s/%s/commits/%s"
+                                   % (owner, repo, sha))) is not None
+    cache[key] = exists
+    return exists
+
+
+def comment_tag(raw_lines, line):
+    """The # vX.Y.Z comment on a raw file line (1-based), or None.
+    Only a bare version counts — free text like '# pinned for now'
+    is not a tag and is ignored."""
+    if not raw_lines or line < 1 or line > len(raw_lines):
+        return None
+    m = TAG_COMMENT_RE.search(raw_lines[line - 1])
+    return m.group(1) if m else None
+
+
+def check_online(pinned, file, cache):
+    """PG-020 — verify every pinned action collected by check_pinning.
+    Returns (findings, notes): notes are non-fatal problems (network
+    down, rate limit) — the scan keeps its other findings either way."""
+    findings, notes = [], []
+    for entry in pinned:
+        owner, repo = entry["owner"], entry["repo"]
+        ref, tag = entry["ref"], entry["tag"]
+        action = "%s/%s" % (owner, repo)
+        obj = entry["obj"]
+        try:
+            if tag:
+                tag_sha = tag_commit_sha(owner, repo, tag, cache)
+                if tag_sha is None:
+                    findings.append(make_finding(
+                        file, entry["line"], "PG-020", "high", obj,
+                        "Pinned %s@%s, but tag %s does not exist upstream "
+                        "— the # %s comment is stale or wrong"
+                        % (action, ref[:7], tag, tag),
+                        key_obj=obj + ":tag-missing"))
+                elif tag_sha.lower() != ref.lower():
+                    findings.append(make_finding(
+                        file, entry["line"], "PG-020", "high", obj,
+                        "Pinned %s@%s, but tag %s points at %s — the pin "
+                        "and the tag disagree (tag moved, or pin is stale)"
+                        % (action, ref[:7], tag, tag_sha[:7]),
+                        key_obj=obj + ":tag-mismatch"))
+                # Matching tag implies the SHA exists — no second call.
+            else:
+                if not commit_exists(owner, repo, ref, cache):
+                    findings.append(make_finding(
+                        file, entry["line"], "PG-020", "high", obj,
+                        "Pinned %s@%s, but that SHA does not exist upstream "
+                        "— bogus pin (typo, or the action repo was rewritten)"
+                        % (action, ref[:7]),
+                        key_obj=obj + ":sha-missing"))
+        except ValueError as exc:
+            notes.append("Online check skipped for %s: %s" % (action, exc))
+            break  # network/rate-limit is run-wide — stop, don't spam
+    return findings, notes
 
 
 def check_permissions(data, file):
@@ -1180,14 +1332,15 @@ def check_jenkins_shell(lines, file):
 
 
 # ---------------------------------------------------------------- orchestrate
-def check_workflow(data, file, strict=False):
+def check_workflow(data, file, strict=False, raw_lines=None, pinned_out=None):
     """Run every workflow check over one parsed workflow."""
     triggers = normalise_triggers(data)
     findings = []
     findings += check_triggers(data, file)
     findings += check_injection(data, file, triggers)
     findings += check_secret_echo(data, file)
-    findings += check_pinning(data, file, strict=strict)
+    findings += check_pinning(data, file, strict=strict,
+                              raw_lines=raw_lines, pinned_out=pinned_out)
     findings += check_permissions(data, file)
     findings += check_misc_workflow(data, file, triggers)
     return findings
@@ -1218,8 +1371,11 @@ def collect_files(path):
     return sorted(found)
 
 
-def scan_one_file(path, display, strict=False):
-    """Scan one file. Returns (findings, errors, stats)."""
+def scan_one_file(path, display, strict=False, verify_online=False,
+                  gh_cache=None):
+    """Scan one file. Returns (findings, errors, stats). With
+    verify_online, pinned SHAs are also checked against GitHub (PG-020);
+    gh_cache is shared across files so one tag is looked up once."""
     findings, errors = [], []
     stats = {"workflows": 0, "jenkinsfiles": 0, "jobs": 0, "steps": 0}
     if is_jenkinsfile(path):
@@ -1253,7 +1409,14 @@ def scan_one_file(path, display, strict=False):
     stats["steps"] = sum(
         len(job.get("steps") or [])
         for _k, job in items(jobs) if isinstance(job, dict))
-    findings += check_workflow(data, display, strict=strict)
+    pinned = []
+    findings += check_workflow(data, display, strict=strict,
+                               raw_lines=text.splitlines(),
+                               pinned_out=pinned)
+    if verify_online and pinned:
+        online, notes = check_online(pinned, display, gh_cache or {})
+        findings += online
+        errors.extend(notes)
     return findings, errors, stats
 
 
@@ -1397,15 +1560,21 @@ def scan_path(path, args):
             info("Baseline", args.baseline)
         if getattr(args, "baseline_write", None):
             info("Baseline write", args.baseline_write)
+        if getattr(args, "verify_online", False):
+            info("Online SHA check", "on (PG-020, GitHub API)")
         sep()
     findings, errors = [], []
     stats = {"files": len(files), "workflows": 0, "jenkinsfiles": 0,
              "jobs": 0, "steps": 0}
+    gh_cache = {}
+    verify_online = getattr(args, "verify_online", False)
     base = path if os.path.isdir(path) else os.path.dirname(
         os.path.abspath(path)) or "."
     for full in files:
         display = os.path.relpath(full, base)
-        f, e, s = scan_one_file(full, display, strict=args.strict)
+        f, e, s = scan_one_file(full, display, strict=args.strict,
+                                verify_online=verify_online,
+                                gh_cache=gh_cache)
         findings.extend(f)
         errors.extend(e)
         for k in stats:
@@ -1513,6 +1682,7 @@ MENU_OPTIONS = [
     (5, "List all checks", "checks"),
     (6, "Run step tests", "test"),
     (7, "Check setup (doctor)", "doctor"),
+    (8, "Scan with online SHA verification (--verify-online)", "online"),
     (0, "Exit", None),
 ]
 
@@ -1595,6 +1765,13 @@ def doctor():
             ok("Test %s: %s" % (label, full))
         else:
             warn("Test %s missing: %s" % (label, full))
+    # Online SHA check (v1.1, PG-020): needs internet + GitHub API.
+    # GITHUB_TOKEN is optional — without it the limit is 60 requests/hour.
+    if os.environ.get("GITHUB_TOKEN"):
+        ok("GITHUB_TOKEN is set — online SHA checks get 5,000 req/hour")
+    else:
+        info("GITHUB_TOKEN", "not set — online SHA checks use 60 req/hour "
+             "unauthenticated (enough for a few workflows)")
     if yaml is None:
         warn("Doctor: something is missing (see [!] lines above).")
         return 1
@@ -1616,7 +1793,11 @@ def menu(args):
     base = os.path.dirname(os.path.abspath(__file__))
     bad = os.path.join(base, "test_workflows", "bad")
     clean = os.path.join(base, "test_workflows", "clean")
+    # --verify-online given on the command line applies to the whole
+    # session; option 8 turns it on for one scan only.
+    session_verify = getattr(args, "verify_online", False)
     while True:
+        args.verify_online = session_verify
         show_menu()
         try:
             choice = input(f"{C.WHT}\n [ ? ] {ACCENT}Select option{C.WHT} : {ACCENT2}").strip()
@@ -1635,6 +1816,10 @@ def menu(args):
                 args.output = "report_clean.txt"
                 code, _f, _s, _g = scan_path(clean, args)
                 print("Exit code: %d" % code)
+            elif choice == "8":
+                args.verify_online = True
+                code, _f, _s, _g = menu_scan(args, ".", "pipesentry_report.txt")
+                print("Exit code: %d" % code)
             elif choice == "4":
                 path = ask("ENTER FOLDER OR FILE", bad)
                 show_structure(path or bad)
@@ -1646,7 +1831,7 @@ def menu(args):
             elif choice == "7":
                 doctor()
             else:
-                err("Please input a number from the menu (0-7).")
+                err("Please input a number from the menu (0-8).")
                 time.sleep(1)
                 continue
         except (EOFError, KeyboardInterrupt):
@@ -1666,7 +1851,8 @@ def build_parser():
     p = argparse.ArgumentParser(
         prog="pipesentry",
         description="PipeSentry — CI/CD Pipeline Security Scanner "
-                    "(files only, no network).")
+                    "(offline by default; --verify-online checks pinned "
+                    "SHAs against GitHub).")
     p.add_argument("path", nargs="?", default=None,
                    help="pipeline file or folder to audit")
     p.add_argument("-o", "--output", default="pipesentry_report.txt",
@@ -1689,6 +1875,10 @@ def build_parser():
                    help="write all findings to baseline FILE and exit 0")
     p.add_argument("--strict", action="store_true",
                    help="escalate first-party unpinned actions (PG-006) to High")
+    p.add_argument("--verify-online", action="store_true",
+                   help="verify pinned SHAs against GitHub (PG-020): SHA vs "
+                   "its # vX.Y.Z tag, and SHA exists upstream; needs "
+                   "internet (GITHUB_TOKEN raises the 60/hr limit)")
     p.add_argument("--structure", action="store_true",
                    help="print the parsed structure and exit")
     p.add_argument("--list-checks", action="store_true",

@@ -17,9 +17,11 @@ Two input kinds, in one tool, one report format:
 2. **Jenkinsfiles** — scanned as text (plaintext credentials, unguarded
    shell steps, `input` steps without a timeout).
 
-It works on **files only** — no live cluster, no credentials, no network.
-Point it at your own pipeline files (or a folder you exported), never at
-a repository you do not own.
+It works **offline on files** — no live cluster, no credentials, no
+network. Point it at your own pipeline files (or a folder you exported),
+never at a repository you do not own. With `--verify-online` (v1.1) it
+also checks pinned SHAs against GitHub (PG-020) — the only feature that
+needs internet.
 
 ## Quick start
 
@@ -42,7 +44,7 @@ python pipesentry.py path/to/pipelines
 
 Windows: double-click `run.bat`. Linux / macOS: `./run.sh`.
 
-## The checks (19 rules)
+## The checks (20 rules)
 
 | Rule | Severity | Check |
 |------|----------|-------|
@@ -65,6 +67,7 @@ Windows: double-click `run.bat`. Linux / macOS: `./run.sh`.
 | PG-017 | Low | Jenkins `input` step without a timeout |
 | PG-018 | High | `secrets: inherit` exposes all secrets |
 | PG-019 | Medium | Remote script execution (`curl \| sh`) |
+| PG-020 | High | Pinned SHA does not match its tag, or does not exist upstream (`--verify-online` only) |
 
 Severity details: PG-001 drops to High for a plain checkout with no
 `ref:` (the safety then depends on the checkout version); PG-004 drops
@@ -99,9 +102,15 @@ pipesentry <path> [-o report.txt] [--json report.json]
 ```
 
 - `--strict` — escalates first-party unpinned actions (PG-006) to High.
+- `--verify-online` — verify pinned SHAs against GitHub (PG-020): does
+  the SHA match its `# vX.Y.Z` comment, and does the SHA exist upstream
+  at all? Needs internet; unauthenticated GitHub API calls are limited
+  to 60/hour — set `GITHUB_TOKEN` (classic token, no scopes needed) for
+  5,000/hour. If the API is unreachable or rate-limited, the scan keeps
+  its other findings and notes the skip.
 - `--structure` — print the parsed structure (triggers, jobs, steps)
   without running any checks.
-- `--list-checks` — list all 19 rules with severities.
+- `--list-checks` — list all 20 rules with severities.
 
 ## Baseline mode (for legacy repos)
 
@@ -134,6 +143,7 @@ but in the Red/Orange theme:
 [5] List all checks
 [6] Run step tests
 [7] Check setup (doctor)
+[8] Scan with online SHA verification (--verify-online)
 [0] Exit
 ```
 
@@ -146,7 +156,7 @@ Demo order for a presentation: **7** (doctor) → **5** (checks) →
 pipesentry.py          # the tool: parsing, checks, scoring, reports, menu
 run.py                 # launcher: setup / scan / test / doctor / checks
 run.bat / run.sh       # one-click launch (Windows / Linux-macOS)
-test_pipesentry.py     # 7-step tests (72 checks)
+test_pipesentry.py     # 8 step tests (80 checks, incl. online PG-020)
 requirements.txt       # pyyaml>=6.0, colorama>=0.4.6
 test_workflows/bad/    # vulnerable workflows + Jenkinsfile (planted flaws)
 test_workflows/clean/  # hardened mirror (must scan clean)
@@ -184,9 +194,12 @@ RESEARCH_CLI_TOOLS.md  RESEARCH_IMPLEMENTATION.md
 
 ## Limits (stated honestly)
 
-- The scanner is offline: it cannot verify that a pinned SHA actually
-  belongs to the tag named in its `# vX.Y.Z` comment, or that
-  `owner/repo` is not a typosquat — that needs the GitHub API.
+- The scanner is offline by default: `--verify-online` (v1.1, PG-020)
+  checks a pinned SHA against its `# vX.Y.Z` tag and against the
+  upstream commit list, but it cannot tell whether `owner/repo` is a
+  typosquat — that needs a known-actions list. Online checks are also
+  limited to 60 GitHub API requests/hour without a token
+  (`GITHUB_TOKEN` raises it to 5,000/hour).
 - A Jenkinsfile is scanned as text, not parsed as Groovy, so it cannot
   follow control flow; Jenkinsfile findings are phrased as "pattern
   found on line N".

@@ -19,6 +19,8 @@ jobs:
         run: 'echo "Thanks: ${{ github.event.pull_request.title }}"'
       - name: Check changed files
         uses: tj-actions/changed-files@v45
+      - name: Changed files with a bogus pin (PG-020 demo)
+        uses: tj-actions/changed-files@0000000000000000000000000000000000000000 # v45
       - name: Run a container action
         uses: docker://alpine:3.19
       - name: Print the token

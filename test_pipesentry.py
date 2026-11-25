@@ -8,6 +8,8 @@ Step 4: secret-echo check (echo, printenv, set -x, encoded).
 Step 5: script-injection check (dangerous ${{ }} in run:).
 Step 6: permissions check + report (file, line, severity, fix).
 Step 7: full run on the test folders + Jenkinsfile + baseline mode.
+Step 8: online SHA verification (v1.1, PG-020) — needs internet to
+api.github.com; skips cleanly when offline.
 
 Usage: python test_pipesentry.py   (or: python run.py test)
 """
@@ -274,8 +276,9 @@ def step6():
 def step7():
     print("\nStep 7 — full run on the test folders")
     code, findings, score, grade = scan(BAD_DIR)
-    check("bad folder: all 19 rules fire",
-          rules_of(findings) == set(ps.RULES))
+    # PG-020 needs --verify-online (network), so offline it cannot fire.
+    check("bad folder: all 19 offline rules fire",
+          rules_of(findings) == set(ps.RULES) - {"PG-020"})
     check("bad folder: 38 findings", len(findings) == 38)
     counts = ps.summary_counts(findings)
     check("bad folder: 5 critical, 19 high, 12 medium, 2 low",
@@ -333,8 +336,95 @@ def step7():
     check("list_checks runs", ps.list_checks() is None)
 
 
+def _fake_github_server():
+    """A tiny local server that mimics the GitHub API endpoints PG-020
+    uses — so the full online flow is verified deterministically, even
+    when the real API is offline or rate-limited."""
+    import http.server
+    import threading
+
+    zeros = "0" * 40
+    routes = {
+        "/repos/actions/checkout/git/refs/tags/v4.2.1":
+            (200, {"object": {"type": "commit",
+                              "sha": "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"}}),
+        "/repos/tj-actions/changed-files/git/refs/tags/v45":
+            (200, {"object": {"type": "commit",
+                              "sha": "48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c"}}),
+        "/repos/actions/checkout/commits/" + zeros:
+            (404, {"message": "Not Found"}),
+        "/repos/tj-actions/changed-files/commits/" + zeros:
+            (404, {"message": "Not Found"}),
+        "/repos/actions/checkout/commits/eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871":
+            (200, {"sha": "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"}),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, payload = routes.get(
+                self.path, (404, {"message": "Not Found"}))
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def step8():
+    print("\nStep 8 — online SHA verification (PG-020)")
+    # Part 1 — real GitHub API smoke test. Skips cleanly when offline
+    # or rate-limited (unauthenticated limit is 60/hr per IP — a shared
+    # IP can burn it). A ValueError means "could not verify", not
+    # "verification failed".
+    try:
+        sha = ps.tag_commit_sha("actions", "checkout", "v4.2.1", {})
+        check("tag v4.2.1 resolves to its real SHA (live API)",
+              sha == "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871")
+    except ValueError as exc:
+        print("  [SKIP] live-API check — %s" % exc)
+    # Part 2 — local fake GitHub API: the full online flow, always runs.
+    server = _fake_github_server()
+    old = os.environ.get("PIPE_SENTRY_GITHUB_API")
+    os.environ["PIPE_SENTRY_GITHUB_API"] = (
+        "http://127.0.0.1:%d" % server.server_address[1])
+    try:
+        check("fake API: tag v45 resolves to its real SHA",
+              ps.tag_commit_sha("tj-actions", "changed-files", "v45", {})
+              == "48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c")
+        check("fake API: bogus SHA does not exist upstream",
+              not ps.commit_exists("actions", "checkout", "0" * 40, {}))
+        # Clean folder: the real pins verify, still 0 findings.
+        code, findings, score, grade = scan(CLEAN_DIR, verify_online=True)
+        check("clean folder verifies online: 0 findings", findings == [])
+        check("clean folder verifies online: exit 0", code == 0)
+        # Bad folder: the bogus pin fires PG-020 (39 findings online).
+        code, findings, score, grade = scan(BAD_DIR, verify_online=True)
+        check("bad folder online: PG-020 fires once",
+              len(of_rule(findings, "PG-020")) == 1)
+        check("bad folder online: 39 findings", len(findings) == 39)
+        check("bad folder online: PG-020 line is the bogus pin",
+              any(x["line"] == find_line(
+                  os.path.join(BAD_DIR, "ci.yml"),
+                  "0000000000000000000000000000000000000000")
+                  for x in of_rule(findings, "PG-020")))
+    finally:
+        if old is None:
+            del os.environ["PIPE_SENTRY_GITHUB_API"]
+        else:
+            os.environ["PIPE_SENTRY_GITHUB_API"] = old
+        server.shutdown()
+
+
 def run_all_tests():
-    print("PipeSentry step tests — 7 steps from the build plan")
+    print("PipeSentry step tests — 7 steps from the build plan + step 8")
     print("=" * 58)
     step1()
     step2()
@@ -343,6 +433,7 @@ def run_all_tests():
     step5()
     step6()
     step7()
+    step8()
     print()
     print("=" * 58)
     print("PASSED: %d   FAILED: %d" % (PASSED, FAILED))

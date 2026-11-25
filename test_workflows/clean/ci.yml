@@ -13,7 +13,7 @@ jobs:
       MY_TOKEN: ${{ secrets.MY_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@b5d2142d2c33b2e2b4b8c99551d533bcfcceb365 # v4.2.1
+        uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
         with:
           persist-credentials: false
       - name: Greet
@@ -21,6 +21,6 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: 'echo "Thanks: $PR_TITLE"'
       - name: Check changed files
-        uses: tj-actions/changed-files@8e261526c9a6242bd903b38138a00ccac0718406 # v45
+        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
       - name: Build
         run: npm ci && npm run build

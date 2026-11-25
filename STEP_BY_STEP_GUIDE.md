@@ -114,7 +114,7 @@ planted flaw is found, with the right severity and the right line.
 `python run.py scan test_workflows/clean`, plus the Jenkinsfile folders
 and baseline mode (`--baseline-write` / `--baseline`).
 
-**Test:** Step 7 — bad folder: all 19 rules fire, 38 findings
+**Test:** Step 7 — bad folder: all 19 offline rules fire, 38 findings
 (5 critical, 19 high, 12 medium, 2 low), score 0/100 grade F, exit
 code 2; clean folder: 0 findings, score 100/100 grade A, exit code 0;
 bad Jenkinsfile: PG-015 ×5, PG-016 ×3, PG-017 ×1; clean Jenkinsfile: 0;
@@ -122,9 +122,33 @@ baseline: same folder again reports 0 new findings, a clean baseline
 makes all 38 findings new, and the baseline file stores no secret
 values.
 
+## Step 8 — Online SHA verification (v1.1, PG-020, PDF ke baad ka upgrade)
+
+**What:** a pinned SHA is only safe if it is the SHA the tag actually
+points at — and if it exists upstream at all. `--verify-online` (menu
+option 8) asks the GitHub API for each pinned action: the tag's commit
+SHA (annotated tags resolved one hop) and whether the pinned commit
+exists. Mismatch or missing SHA → PG-020 (High). The clean fixture
+uses real SHAs (actions/checkout v4.2.1 and tj-actions/changed-files
+v45, taken from the API), so it still scores 100/100; the bad fixture
+has one bogus pin (`tj-actions/changed-files@0000… # v45`), so the
+online bad scan is 39 findings.
+
+**How:** `pipesentry.py <folder> --verify-online`. Only stdlib urllib —
+no new dependency. Unauthenticated limit is 60 requests/hour; set
+`GITHUB_TOKEN` for 5,000/hour. If the API is unreachable or
+rate-limited, the scan keeps its other findings and notes the skip.
+`PIPE_SENTRY_GITHUB_API` overrides the API base URL (for tests).
+
+**Test:** Step 8 — the tag lookups resolve to the real SHAs, a bogus
+SHA does not exist upstream, the clean folder verifies with 0 findings,
+the bad folder fires PG-020 once (39 findings). The step tests run the
+full online flow against a local fake GitHub API server, so they pass
+even when the real API is rate-limited.
+
 ## After the build
 
-1. `python run.py test` — 72 checks, all pass.
+1. `python run.py test` — 80 checks, all pass.
 2. `python run.py scan test_workflows/bad` — see the 38 findings.
 3. `python run.py scan test_workflows/clean` — see the clean pass.
 4. Point it at your own pipeline folder: `python run.py scan <folder>`.

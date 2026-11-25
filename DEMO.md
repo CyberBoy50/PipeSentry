@@ -7,7 +7,7 @@ workflow YAML and Jenkinsfiles — and finds the security flaws in them:
 dangerous triggers, script injection, unpinned actions, secrets printed
 to logs, over-broad permissions and hardcoded Jenkins credentials.
 Every finding reports the **file, line number, severity and fix**, plus
-a 0–100 score and a grade. It is offline and file-only: no network, no
+a 0–100 score and a grade. It is offline and file-only by default: no network, no
 credentials, no live cluster.
 
 ## Run it (3 commands)
@@ -115,8 +115,10 @@ attack class that tags leave open.
 
 ## Test results
 
-`python run.py test` — **72 checks, all pass** (7 steps from the build
-plan). Bad folder: 38 findings (5 critical, 19 high, 12 medium, 2 low),
+`python run.py test` — **80 checks, all pass** (8 steps: the 7 from the
+build plan, plus step 8 for online SHA verification). Bad folder: 38
+findings offline (5 critical, 19 high, 12 medium, 2 low), 39 with
+`--verify-online` (PG-020 fires once, on the bogus pin in `ci.yml`);
 score 0/100, grade F, exit code 2. Clean folder: 0 findings, score
 100/100, grade A, exit code 0. Every finding's line number is asserted
 against the fixture file it came from.
