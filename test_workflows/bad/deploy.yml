@@ -1,0 +1,23 @@
+name: Deploy
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - run: echo building
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - run: echo deploying
+  call-shared:
+    uses: myorg/shared-workflows/.github/workflows/shared.yml@v1
+    secrets: inherit

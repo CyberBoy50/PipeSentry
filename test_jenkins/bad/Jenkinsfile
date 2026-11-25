@@ -1,0 +1,28 @@
+pipeline {
+    agent any
+    environment {
+        DB_USER = 'admin'
+        password = 's3cret-db-password'
+        AWS_ACCESS_KEY_ID = 'AKIAIOSFODNN7EXAMPLE'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                // -----BEGIN RSA PRIVATE KEY-----
+                sh "curl -u admin:s3cretpass https://internal.example.com/api"
+                sh "echo Building ${params.BRANCH}"
+                sh "echo $DB_PASSWORD"
+                sh """
+                    echo "Deploying ${params.TARGET}"
+                """
+                sh 'docker run -v /var/run/docker.sock:/var/run/docker.sock myimage'
+                sh 'echo safe single quotes $HOME'
+            }
+        }
+        stage('Approve') {
+            steps {
+                input message: 'Deploy to production?'
+            }
+        }
+    }
+}

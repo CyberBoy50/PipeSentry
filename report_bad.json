@@ -1,0 +1,397 @@
+{
+  "tool": "PipeSentry",
+  "version": "1.0",
+  "author": "CyberBoy50",
+  "scanned_at": "2026-11-25 19:56:21",
+  "scanned_path": "test_workflows/bad",
+  "files": 5,
+  "workflows": 4,
+  "jenkinsfiles": 1,
+  "jobs": 7,
+  "steps": 17,
+  "score": 0,
+  "grade": "F",
+  "findings": [
+    {
+      "file": "Jenkinsfile",
+      "line": 5,
+      "rule": "PG-015",
+      "severity": "high",
+      "title": "Hardcoded credential in Jenkinsfile",
+      "object": "line=5",
+      "evidence": "Hardcoded credential value in Jenkinsfile \u2014 move it to the Jenkins credentials store and reference it by credentialsId",
+      "fix": "Move it to the Jenkins credentials store and reference it by credentialsId."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 6,
+      "rule": "PG-015",
+      "severity": "critical",
+      "title": "Hardcoded credential in Jenkinsfile",
+      "object": "line=6",
+      "evidence": "AWS access key ID in Jenkinsfile",
+      "fix": "Move it to the Jenkins credentials store and reference it by credentialsId."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 11,
+      "rule": "PG-015",
+      "severity": "critical",
+      "title": "Hardcoded credential in Jenkinsfile",
+      "object": "line=11",
+      "evidence": "Private key in Jenkinsfile \u2014 anyone with repo read access has it",
+      "fix": "Move it to the Jenkins credentials store and reference it by credentialsId."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 12,
+      "rule": "PG-015",
+      "severity": "high",
+      "title": "Hardcoded credential in Jenkinsfile",
+      "object": "line=12",
+      "evidence": "Credentials in a curl -u user:pass argument \u2014 visible in the console log and in the process list",
+      "fix": "Move it to the Jenkins credentials store and reference it by credentialsId."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 13,
+      "rule": "PG-016",
+      "severity": "high",
+      "title": "Unguarded sh step in Jenkinsfile",
+      "object": "line=13",
+      "evidence": "Groovy ${...} interpolated inside a double-quoted sh string \u2014 use single quotes and pass values via env",
+      "fix": "Use single-quoted sh strings; pass values via env."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 14,
+      "rule": "PG-015",
+      "severity": "medium",
+      "title": "Hardcoded credential in Jenkinsfile",
+      "object": "line=14",
+      "evidence": "Secret-like variable used with no withCredentials block in this Jenkinsfile \u2014 where does its value come from?",
+      "fix": "Move it to the Jenkins credentials store and reference it by credentialsId."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 16,
+      "rule": "PG-016",
+      "severity": "high",
+      "title": "Unguarded sh step in Jenkinsfile",
+      "object": "line=16",
+      "evidence": "Groovy ${...} interpolated inside a multi-line double-quoted sh block \u2014 use single quotes and pass values via env",
+      "fix": "Use single-quoted sh strings; pass values via env."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 18,
+      "rule": "PG-016",
+      "severity": "high",
+      "title": "Unguarded sh step in Jenkinsfile",
+      "object": "line=18",
+      "evidence": "Docker socket mounted into a build step \u2014 the step is root on the host",
+      "fix": "Use single-quoted sh strings; pass values via env."
+    },
+    {
+      "file": "Jenkinsfile",
+      "line": 24,
+      "rule": "PG-017",
+      "severity": "low",
+      "title": "Jenkins input step without timeout",
+      "object": "line=24",
+      "evidence": "input step without a timeout \u2014 a build can hang forever waiting for approval",
+      "fix": "Add timeout: time: 30, unit: 'MINUTES'."
+    },
+    {
+      "file": "artifacts.yml",
+      "line": 1,
+      "rule": "PG-010",
+      "severity": "medium",
+      "title": "No permissions: block",
+      "object": "workflow",
+      "evidence": "No permissions: block \u2014 the token scope depends on the repo default (often read+write on older repos)",
+      "fix": "Declare permissions: {contents: read} explicitly; do not depend on the repo default."
+    },
+    {
+      "file": "artifacts.yml",
+      "line": 10,
+      "rule": "PG-003",
+      "severity": "high",
+      "title": "workflow_run executes a downloaded artifact",
+      "object": "job=process",
+      "evidence": "workflow_run job downloads an artifact and runs code in the same job \u2014 a poisoned artifact from the untrusted run executes here",
+      "fix": "Download one bounded artifact, validate it against a schema, never execute it directly."
+    },
+    {
+      "file": "artifacts.yml",
+      "line": 10,
+      "rule": "PG-006",
+      "severity": "medium",
+      "title": "Unpinned first-party action",
+      "object": "job=process:step=0:action=actions/download-artifact",
+      "evidence": "First-party action actions/download-artifact@v4 is not pinned \u2014 tags move; pin to the full 40-char commit SHA",
+      "fix": "Pin to the full 40-char commit SHA."
+    },
+    {
+      "file": "ci.yml",
+      "line": 6,
+      "rule": "PG-012",
+      "severity": "high",
+      "title": "Unsecure workflow commands enabled",
+      "object": "workflow",
+      "evidence": "ACTIONS_ALLOW_UNSECURE_COMMANDS=true re-enables the deprecated set-output / save-state commands \u2014 an injection primitive",
+      "fix": "Remove ACTIONS_ALLOW_UNSECURE_COMMANDS."
+    },
+    {
+      "file": "ci.yml",
+      "line": 7,
+      "rule": "PG-008",
+      "severity": "high",
+      "title": "permissions: write-all",
+      "object": "workflow",
+      "evidence": "permissions: write-all \u2014 every scope is writable",
+      "fix": "Replace with contents: read; grant writes per job."
+    },
+    {
+      "file": "ci.yml",
+      "line": 10,
+      "rule": "PG-014",
+      "severity": "high",
+      "title": "Self-hosted runner with untrusted trigger",
+      "object": "job=build",
+      "evidence": "Job build runs on a self-hosted runner under an untrusted trigger (pull_request_target) \u2014 a compromised step owns the host",
+      "fix": "Use GitHub-hosted runners for PR-triggered jobs."
+    },
+    {
+      "file": "ci.yml",
+      "line": 15,
+      "rule": "PG-006",
+      "severity": "medium",
+      "title": "Unpinned first-party action",
+      "object": "job=build:step=0:action=actions/checkout",
+      "evidence": "First-party action actions/checkout@v4 is not pinned \u2014 tags move; pin to the full 40-char commit SHA",
+      "fix": "Pin to the full 40-char commit SHA."
+    },
+    {
+      "file": "ci.yml",
+      "line": 17,
+      "rule": "PG-001",
+      "severity": "critical",
+      "title": "pull_request_target checks out PR head code",
+      "object": "job=build:step=checkout",
+      "evidence": "actions/checkout ref=${{ github.event.pull_request.head.sha }} checks out PR head code in a pull_request_target workflow",
+      "fix": "Split the workflow: untrusted code under pull_request, privileged work under workflow_run \u2014 never check out fork code in a pull_request_target job."
+    },
+    {
+      "file": "ci.yml",
+      "line": 19,
+      "rule": "PG-004",
+      "severity": "critical",
+      "title": "Script injection via ${{ }} in run:",
+      "object": "job=build:step=1:expr=github.event.pull_request.title",
+      "evidence": "Untrusted expression ${{ github.event.pull_request.title }} interpolated in run: \u2014 it becomes shell code",
+      "fix": "Move the value to env: and reference \"$VAR\" in the script \u2014 never interpolate event data into run:."
+    },
+    {
+      "file": "ci.yml",
+      "line": 21,
+      "rule": "PG-005",
+      "severity": "high",
+      "title": "Unpinned third-party action",
+      "object": "job=build:step=2:action=tj-actions/changed-files",
+      "evidence": "Third-party action tj-actions/changed-files@v45 is not pinned \u2014 pin to the full 40-char commit SHA (see CVE-2025-30066)",
+      "fix": "Pin to the full 40-char commit SHA, keep the version as a # vX.Y.Z comment. (tj-actions, CVE-2025-30066: attackers rewrote version tags and 23,000+ repos ran malicious code.)"
+    },
+    {
+      "file": "ci.yml",
+      "line": 23,
+      "rule": "PG-005",
+      "severity": "high",
+      "title": "Unpinned third-party action",
+      "object": "job=build:step=3:action=docker://alpine:3.19",
+      "evidence": "Docker action docker://alpine:3.19 is not pinned by digest \u2014 use docker://image@sha256:<digest>",
+      "fix": "Pin to the full 40-char commit SHA, keep the version as a # vX.Y.Z comment. (tj-actions, CVE-2025-30066: attackers rewrote version tags and 23,000+ repos ran malicious code.)"
+    },
+    {
+      "file": "ci.yml",
+      "line": 25,
+      "rule": "PG-007",
+      "severity": "medium",
+      "title": "Secret echoed to logs",
+      "object": "job=build:step=4:var=MY_TOKEN",
+      "evidence": "Secret-bearing variable echoed to logs: MY_TOKEN",
+      "fix": "Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it."
+    },
+    {
+      "file": "ci.yml",
+      "line": 27,
+      "rule": "PG-007",
+      "severity": "medium",
+      "title": "Secret echoed to logs",
+      "object": "job=build:step=5:expr",
+      "evidence": "Secret interpolated directly in run: (echo ${{ secrets.DEPLOY_KEY }}) \u2014 GitHub masks registered secrets, but substrings and encoded forms are not masked",
+      "fix": "Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it."
+    },
+    {
+      "file": "ci.yml",
+      "line": 29,
+      "rule": "PG-007",
+      "severity": "high",
+      "title": "Secret echoed to logs",
+      "object": "job=build:step=6:printenv",
+      "evidence": "printenv/env dumps the whole environment including secrets",
+      "fix": "Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it."
+    },
+    {
+      "file": "ci.yml",
+      "line": 31,
+      "rule": "PG-007",
+      "severity": "high",
+      "title": "Secret echoed to logs",
+      "object": "job=build:step=7:set-x",
+      "evidence": "set -x prints every command with variables expanded \u2014 secrets leak into the log",
+      "fix": "Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it."
+    },
+    {
+      "file": "ci.yml",
+      "line": 33,
+      "rule": "PG-007",
+      "severity": "high",
+      "title": "Secret echoed to logs",
+      "object": "job=build:step=8:encoded",
+      "evidence": "Secret piped through an encoder (echo $MY_TOKEN | base64) \u2014 encoded forms bypass GitHub's log masking",
+      "fix": "Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it."
+    },
+    {
+      "file": "ci.yml",
+      "line": 33,
+      "rule": "PG-007",
+      "severity": "medium",
+      "title": "Secret echoed to logs",
+      "object": "job=build:step=8:var=MY_TOKEN",
+      "evidence": "Secret-bearing variable echoed to logs: MY_TOKEN",
+      "fix": "Do not print secrets; remove the echo. If a value must be inspected, use ::add-mask:: before any command that might print it."
+    },
+    {
+      "file": "ci.yml",
+      "line": 35,
+      "rule": "PG-019",
+      "severity": "medium",
+      "title": "Remote script execution (curl | sh)",
+      "object": "job=build:step=9:curl-pipe",
+      "evidence": "Remote script piped straight into a shell (curl https://example.com/install.sh | sh) \u2014 download it, verify its hash, then run the local copy",
+      "fix": "Download the script, verify its hash, then run the local copy \u2014 never pipe a remote URL straight into a shell."
+    },
+    {
+      "file": "ci.yml",
+      "line": 39,
+      "rule": "PG-001",
+      "severity": "high",
+      "title": "pull_request_target checks out PR head code",
+      "object": "job=package:step=checkout",
+      "evidence": "actions/checkout with no ref: in a pull_request_target workflow (checkout unpinned) \u2014 the safety of this depends on the checkout version",
+      "fix": "Split the workflow: untrusted code under pull_request, privileged work under workflow_run \u2014 never check out fork code in a pull_request_target job."
+    },
+    {
+      "file": "ci.yml",
+      "line": 39,
+      "rule": "PG-006",
+      "severity": "medium",
+      "title": "Unpinned first-party action",
+      "object": "job=package:step=0:action=actions/checkout",
+      "evidence": "First-party action actions/checkout@v4 is not pinned \u2014 tags move; pin to the full 40-char commit SHA",
+      "fix": "Pin to the full 40-char commit SHA."
+    },
+    {
+      "file": "ci.yml",
+      "line": 39,
+      "rule": "PG-013",
+      "severity": "low",
+      "title": "Checkout persists credentials + artifact upload",
+      "object": "job=package",
+      "evidence": "Job package: checkout persists the GITHUB_TOKEN and the job uploads an artifact \u2014 the token can end up in the artifact",
+      "fix": "Set persist-credentials: false on the checkout step."
+    },
+    {
+      "file": "ci.yml",
+      "line": 42,
+      "rule": "PG-006",
+      "severity": "medium",
+      "title": "Unpinned first-party action",
+      "object": "job=package:step=1:action=actions/upload-artifact",
+      "evidence": "First-party action actions/upload-artifact@v4 is not pinned \u2014 tags move; pin to the full 40-char commit SHA",
+      "fix": "Pin to the full 40-char commit SHA."
+    },
+    {
+      "file": "deploy.yml",
+      "line": 6,
+      "rule": "PG-009",
+      "severity": "high",
+      "title": "Workflow-level write permission",
+      "object": "workflow:scope=contents",
+      "evidence": "Workflow-level contents: write \u2014 every job gets this write scope; move it to the one job that needs it",
+      "fix": "Move the write scope to the job that needs it."
+    },
+    {
+      "file": "deploy.yml",
+      "line": 7,
+      "rule": "PG-009",
+      "severity": "medium",
+      "title": "Workflow-level write permission",
+      "object": "workflow:scope=issues",
+      "evidence": "Workflow-level issues: write \u2014 every job gets this write scope; move it to the one job that needs it",
+      "fix": "Move the write scope to the job that needs it."
+    },
+    {
+      "file": "deploy.yml",
+      "line": 12,
+      "rule": "PG-011",
+      "severity": "medium",
+      "title": "id-token: write outside deploy job",
+      "object": "job=build:scope=id-token",
+      "evidence": "Job build: id-token: write mints OIDC tokens \u2014 restrict it to the deploy job",
+      "fix": "Restrict id-token: write to the deploy job."
+    },
+    {
+      "file": "deploy.yml",
+      "line": 22,
+      "rule": "PG-005",
+      "severity": "high",
+      "title": "Unpinned third-party action",
+      "object": "job=call-shared:action=myorg/shared-workflows/.github/workflows/shared.yml",
+      "evidence": "Third-party action myorg/shared-workflows@v1 is not pinned \u2014 pin to the full 40-char commit SHA (see CVE-2025-30066)",
+      "fix": "Pin to the full 40-char commit SHA, keep the version as a # vX.Y.Z comment. (tj-actions, CVE-2025-30066: attackers rewrote version tags and 23,000+ repos ran malicious code.)"
+    },
+    {
+      "file": "deploy.yml",
+      "line": 23,
+      "rule": "PG-018",
+      "severity": "high",
+      "title": "secrets: inherit exposes all secrets",
+      "object": "job=call-shared",
+      "evidence": "Job call-shared calls myorg/shared-workflows/.github/workflows/shared.yml with secrets: inherit \u2014 every secret goes to the called workflow; pass only the ones it needs",
+      "fix": "Pass only the secrets the called workflow needs, by name \u2014 never secrets: inherit."
+    },
+    {
+      "file": "notify.yml",
+      "line": 2,
+      "rule": "PG-002",
+      "severity": "high",
+      "title": "pull_request_target without checkout",
+      "object": "trigger=pull_request_target",
+      "evidence": "Workflow runs on pull_request_target with secrets, but checks out nothing \u2014 any run: step touching github.event.* data is still exposed",
+      "fix": "Prefer pull_request unless you need secrets; keep the job free of PR-controlled data."
+    },
+    {
+      "file": "notify.yml",
+      "line": 10,
+      "rule": "PG-004",
+      "severity": "critical",
+      "title": "Script injection via ${{ }} in run:",
+      "object": "job=comment:step=0:expr=github.event.pull_request.title",
+      "evidence": "Untrusted expression ${{ github.event.pull_request.title }} interpolated in run: \u2014 it becomes shell code",
+      "fix": "Move the value to env: and reference \"$VAR\" in the script \u2014 never interpolate event data into run:."
+    }
+  ],
+  "notes": []
+}

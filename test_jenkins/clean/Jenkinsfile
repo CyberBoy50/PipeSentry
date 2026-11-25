@@ -1,0 +1,25 @@
+pipeline {
+    agent any
+    environment {
+        APP_NAME = 'myapp'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'db-creds',
+                    usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
+                    sh 'docker login -u $DB_USER -p $DB_PASS myregistry.com'
+                }
+                sh 'echo Building $APP_NAME'
+                sh "echo Done"
+            }
+        }
+        stage('Approve') {
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: 'Deploy to production?'
+                }
+            }
+        }
+    }
+}

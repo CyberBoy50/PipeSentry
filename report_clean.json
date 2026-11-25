@@ -1,0 +1,16 @@
+{
+  "tool": "PipeSentry",
+  "version": "1.0",
+  "author": "CyberBoy50",
+  "scanned_at": "2026-11-25 19:56:21",
+  "scanned_path": "test_workflows/clean",
+  "files": 2,
+  "workflows": 1,
+  "jenkinsfiles": 1,
+  "jobs": 1,
+  "steps": 4,
+  "score": 100,
+  "grade": "A",
+  "findings": [],
+  "notes": []
+}

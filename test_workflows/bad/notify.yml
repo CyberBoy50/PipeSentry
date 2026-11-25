@@ -1,0 +1,10 @@
+name: Notify
+on: pull_request_target
+permissions:
+  contents: read
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on the PR
+        run: 'echo "New PR: ${{ github.event.pull_request.title }}"'

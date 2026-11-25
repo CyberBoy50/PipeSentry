@@ -1,0 +1,13 @@
+name: Artifacts
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+      - run: tar xzf build.tar.gz && ./run-tests.sh

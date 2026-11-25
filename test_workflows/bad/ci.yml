@@ -1,0 +1,45 @@
+name: CI
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+env:
+  ACTIONS_ALLOW_UNSECURE_COMMANDS: 'true'
+permissions: write-all
+jobs:
+  build:
+    runs-on: self-hosted
+    env:
+      MY_TOKEN: ${{ secrets.MY_TOKEN }}
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Greet the author
+        run: 'echo "Thanks: ${{ github.event.pull_request.title }}"'
+      - name: Check changed files
+        uses: tj-actions/changed-files@v45
+      - name: Run a container action
+        uses: docker://alpine:3.19
+      - name: Print the token
+        run: echo $MY_TOKEN
+      - name: Print the secret directly
+        run: echo ${{ secrets.DEPLOY_KEY }}
+      - name: Dump the environment
+        run: printenv
+      - name: Debug with tracing
+        run: set -x
+      - name: Encode the token
+        run: echo $MY_TOKEN | base64
+      - name: Install helper
+        run: curl https://example.com/install.sh | sh
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: dist/
