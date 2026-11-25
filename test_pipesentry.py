@@ -12,6 +12,12 @@ Step 8: online SHA verification (v1.1, PG-020) — needs internet to
 api.github.com; skips cleanly when offline.
 Step 9: typosquat check (v1.2, PG-021) — close-but-not-exact action
 names against a curated list of well-known actions.
+Step 10: Jenkinsfile Groovy parser (v1.4) — stages, steps, brace
+matching, timeout-wrapped input.
+Step 11: Docker Hub digest verification (v1.4, PG-022) and the local
+API cache (v1.4) — repeat runs cost no requests.
+Step 12: repository settings check (v1.4, --repo, PG-023/024/025) —
+branch protection, Actions permissions, OIDC subject claim.
 
 Usage: python test_pipesentry.py   (or: python run.py test)
 """
@@ -159,6 +165,17 @@ def step3():
           ps.parse_uses("./.github/actions/my-action")["kind"] == "local")
     check("docker:// with a tag is a docker action",
           ps.parse_uses("docker://alpine:3.19")["kind"] == "docker")
+    docker_out = []
+    data = ps.load_workflow(
+        "name: t\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: docker://alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+    f = ps.check_pinning(data, "t.yml", docker_out=docker_out)
+    check("docker:// digest pin starting with 'a' is pinned, not flagged",
+          f == [] and len(docker_out) == 1
+          and docker_out[0]["ref"].startswith("sha256:aaaa"))
+    check("docker:// digest pin is collected for the online check",
+          docker_out[0]["image"] == "alpine")
     clean = load(os.path.join(CLEAN_DIR, "ci.yml"))
     f = ps.check_pinning(clean, "ci.yml")
     check("clean workflow: no pinning findings", f == [])
@@ -275,8 +292,8 @@ def step6():
           all(set(("file", "line", "rule", "severity", "fix")) <= set(x)
               for x in data["findings"]))
     check("JSON report score matches the text run", data["score"] == 0)
-    # v1.3 — explicit authorized-use responsibility disclaimer.
-    check("tool version is 1.3", ps.VERSION == "1.3")
+    # v1.4 — explicit authorized-use responsibility disclaimer.
+    check("tool version is 1.4", ps.VERSION == "1.4")
     check("text report carries the disclaimer verbatim",
           ps.DISCLAIMER in report)
     check("JSON report carries the disclaimer field verbatim",
@@ -292,15 +309,18 @@ def step6():
           "DISCLAIMER — AUTHORIZED USE ONLY" in banner_out
           and "PECA 2016 in Pakistan" in banner_out)
     check("banner still shows the version",
-          "Version 1.3" in banner_out)
+          "Version 1.4" in banner_out)
 
 
 def step7():
     print("\nStep 7 — full run on the test folders")
     code, findings, score, grade = scan(BAD_DIR)
-    # PG-020 needs --verify-online (network), so offline it cannot fire.
+    # PG-020/PG-022 need --verify-online (network) and PG-023/024/025
+    # need --repo (network + token), so offline none of them can fire.
     check("bad folder: all 20 offline rules fire",
-          rules_of(findings) == set(ps.RULES) - {"PG-020"})
+          rules_of(findings) == set(ps.RULES) - {"PG-020", "PG-022",
+                                                "PG-023", "PG-024",
+                                                "PG-025"})
     check("bad folder: 39 findings", len(findings) == 39)
     counts = ps.summary_counts(findings)
     check("bad folder: 5 critical, 20 high, 12 medium, 2 low",
@@ -379,10 +399,47 @@ def _fake_github_server():
             (404, {"message": "Not Found"}),
         "/repos/actions/checkout/commits/eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871":
             (200, {"sha": "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871"}),
+        # Typosquat confirmation: actions/checkout exists, actions/checkou
+        # 404s (the default route) — so the typo is confirmed online.
+        "/repos/actions/checkout":
+            (200, {"full_name": "actions/checkout"}),
+        "/repos/tj-actions/changed-files":
+            (200, {"full_name": "tj-actions/changed-files"}),
+        # --repo fixtures (step 12): a wide-open repo and a locked-down one.
+        "/repos/octo/hello-world":
+            (200, {"full_name": "octo/hello-world",
+                   "default_branch": "main"}),
+        "/repos/octo/hello-world/branches/main/protection":
+            (404, {"message": "Not Found"}),
+        "/repos/octo/hello-world/actions/permissions":
+            (200, {"enabled": "all", "allowed_actions": "all"}),
+        "/repos/octo/hello-world/actions/permissions/workflow":
+            (200, {"default_workflow_permissions": "write",
+                   "can_approve_pull_request_reviews": True}),
+        "/repos/octo/hello-world/actions/oidc/customization/sub":
+            (200, {"value": "repo:octo/hello-world",
+                   "use_default": False}),
+        "/repos/octo/clean-repo":
+            (200, {"full_name": "octo/clean-repo",
+                   "default_branch": "main"}),
+        "/repos/octo/clean-repo/branches/main/protection":
+            (200, {"required_pull_request_reviews":
+                   {"required_approving_review_count": 1},
+                   "required_status_checks": {"strict": True,
+                                              "contexts": []},
+                   "enforce_admins": {"enabled": True}}),
+        "/repos/octo/clean-repo/actions/permissions":
+            (200, {"enabled": "selected", "allowed_actions": "selected"}),
+        "/repos/octo/clean-repo/actions/permissions/workflow":
+            (200, {"default_workflow_permissions": "read",
+                   "can_approve_pull_request_reviews": False}),
+        "/repos/octo/clean-repo/actions/oidc/customization/sub":
+            (200, {"value": "", "use_default": True}),
     }
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            self.server.counts["n"] += 1
             status, payload = routes.get(
                 self.path, (404, {"message": "Not Found"}))
             body = json.dumps(payload).encode()
@@ -396,8 +453,60 @@ def _fake_github_server():
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    server.counts = {"n": 0}
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+def _fake_docker_hub_server():
+    """A tiny local server that mimics the Docker Hub tag API PG-022
+    uses — so the digest check is verified deterministically."""
+    import http.server
+    import threading
+
+    real_digest = "sha256:" + "a" * 64
+    routes = {
+        "/v2/repositories/library/alpine/tags/3.19":
+            (200, {"name": "3.19",
+                   "images": [{"digest": real_digest}]}),
+        "/v2/repositories/library/alpine/tags?page_size=100":
+            (200, {"results": [
+                {"name": "3.19", "images": [{"digest": real_digest}]},
+                {"name": "latest", "images": [{"digest": real_digest}]},
+            ]}),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.server.counts["n"] += 1
+            status, payload = routes.get(
+                self.path, (404, {"message": "Not Found"}))
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    server.counts = {"n": 0}
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _use_cache_file(path):
+    """Point the tool's disk cache at a temp file (hermetic tests) and
+    force the module to reload it. Pass None to restore the default."""
+    if path is None:
+        os.environ.pop("PIPE_SENTRY_CACHE_FILE", None)
+    else:
+        os.environ["PIPE_SENTRY_CACHE_FILE"] = path
+    ps._API_DISK_CACHE = None
+    ps._API_DISK_CACHE_PATH = None
+    ps._API_DISK_CACHE_DIRTY = False
 
 
 def step8():
@@ -412,28 +521,42 @@ def step8():
               sha == "eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871")
     except ValueError as exc:
         print("  [SKIP] live-API check — %s" % exc)
-    # Part 2 — local fake GitHub API: the full online flow, always runs.
+    # Part 2 — local fake GitHub API + fake Docker Hub: the full online
+    # flow, always runs. The disk cache is pointed at a temp file so
+    # these tests never touch the user's real cache.
     server = _fake_github_server()
+    hub = _fake_docker_hub_server()
     old = os.environ.get("PIPE_SENTRY_GITHUB_API")
+    old_hub = os.environ.get("PIPE_SENTRY_DOCKER_HUB_API")
     os.environ["PIPE_SENTRY_GITHUB_API"] = (
         "http://127.0.0.1:%d" % server.server_address[1])
+    os.environ["PIPE_SENTRY_DOCKER_HUB_API"] = (
+        "http://127.0.0.1:%d" % hub.server_address[1])
+    cache_file = os.path.join(tempfile.gettempdir(), "ps_test_cache.json")
+    if os.path.exists(cache_file):
+        os.unlink(cache_file)
+    _use_cache_file(cache_file)
     try:
         check("fake API: tag v45 resolves to its real SHA",
               ps.tag_commit_sha("tj-actions", "changed-files", "v45", {})
               == "48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c")
         check("fake API: bogus SHA does not exist upstream",
               not ps.commit_exists("actions", "checkout", "0" * 40, {}))
+        check("fake API: actions/checkout exists, actions/checkou does not",
+              ps.repo_exists("actions", "checkout", {})
+              and not ps.repo_exists("actions", "checkou", {}))
         # Clean folder: the real pins verify, still 0 findings.
         code, findings, score, grade = scan(CLEAN_DIR, verify_online=True)
         check("clean folder verifies online: 0 findings", findings == [])
         check("clean folder verifies online: exit 0", code == 0)
-        # Bad folder: the bogus pin fires PG-020 (41 findings online) —
+        # Bad folder: the bogus pin fires PG-020 (42 findings online) —
         # and so does the typosquat pin, whose repo actions/checkou does
-        # not exist upstream at all.
+        # not exist upstream at all — plus the bogus docker digest,
+        # which fires PG-022 against Docker Hub.
         code, findings, score, grade = scan(BAD_DIR, verify_online=True)
         check("bad folder online: PG-020 fires twice",
               len(of_rule(findings, "PG-020")) == 2)
-        check("bad folder online: 41 findings", len(findings) == 41)
+        check("bad folder online: 42 findings", len(findings) == 42)
         check("bad folder online: PG-020 line is the bogus pin",
               any(x["line"] == find_line(
                   os.path.join(BAD_DIR, "ci.yml"),
@@ -443,12 +566,28 @@ def step8():
               any(x["line"] == find_line(
                   os.path.join(BAD_DIR, "ci.yml"), "actions/checkou@")
                   for x in of_rule(findings, "PG-020")))
+        check("bad folder online: PG-022 fires once (bogus docker digest)",
+              len(of_rule(findings, "PG-022")) == 1)
+        check("bad folder online: PG-022 line is the digest pin",
+              any(x["line"] == find_line(
+                  os.path.join(BAD_DIR, "ci.yml"),
+                  "docker://alpine@sha256:0000")
+                  for x in of_rule(findings, "PG-022")))
+        check("bad folder online: typo confirmed by the API in evidence",
+              any("confirmed online" in x["evidence"]
+                  for x in of_rule(findings, "PG-021")))
     finally:
         if old is None:
             del os.environ["PIPE_SENTRY_GITHUB_API"]
         else:
             os.environ["PIPE_SENTRY_GITHUB_API"] = old
+        if old_hub is None:
+            del os.environ["PIPE_SENTRY_DOCKER_HUB_API"]
+        else:
+            os.environ["PIPE_SENTRY_DOCKER_HUB_API"] = old_hub
+        _use_cache_file(None)
         server.shutdown()
+        hub.shutdown()
 
 
 def _typo_workflow(uses):
@@ -493,10 +632,279 @@ def step9():
     # The clean fixture: only exact known actions, no PG-021.
     _c, findings, _s, _g = scan(CLEAN_DIR)
     check("clean folder: no PG-021", of_rule(findings, "PG-021") == [])
+    # v1.4 — the curated list grew from 44 to 150+ well-known actions.
+    check("known-actions list has 150+ entries",
+          len(ps.KNOWN_ACTIONS) >= 150)
+    for exact in ("aws-actions/configure-aws-credentials@v4",
+                  "google-github-actions/auth@v2",
+                  "docker/build-push-action@v6",
+                  "hashicorp/setup-terraform@v3",
+                  "snyk/actions/node@master",
+                  "aquasecurity/trivy-action@master",
+                  "ruby/setup-ruby@v1",
+                  "gradle/actions/setup-gradle@v3"):
+        f = ps.check_typosquat(_typo_workflow(exact), "t.yml")
+        check("exact known action does not flag: %s" % exact.split("@")[0],
+              f == [])
+    f = ps.check_typosquat(
+        _typo_workflow("aws-actions/configure-aws-credential@v4"), "t.yml")
+    check("typo of a newly listed action flags",
+          len(of_rule(f, "PG-021")) == 1
+          and "configure-aws-credentials" in of_rule(f, "PG-021")[0]["evidence"])
+    f = ps.check_typosquat(
+        _typo_workflow("google-github-actions/auht@v2"), "t.yml")
+    check("typo of google-github-actions/auth flags",
+          len(of_rule(f, "PG-021")) == 1)
+
+
+def _repo_args(**kw):
+    args = SimpleNamespace(
+        quiet=True,
+        output=os.path.join(tempfile.gettempdir(), "ps_test_repo.txt"),
+        json=None, min_severity=None, check=None, skip_check=None,
+        fail_on=None, baseline=None, baseline_write=None, strict=False,
+        verify_online=False, repo=None)
+    args.__dict__.update(kw)
+    return args
+
+
+def step10():
+    print("\nStep 10 — Jenkinsfile Groovy parser (v1.4)")
+    with open(os.path.join(JENKINS_BAD, "Jenkinsfile"),
+              encoding="utf-8") as fh:
+        bad_lines = fh.read().splitlines()
+    parsed = ps.parse_jenkinsfile(bad_lines)
+    check("bad Jenkinsfile parses as balanced", parsed["balanced"])
+    check("bad Jenkinsfile: 2 stages", len(parsed["stages"]) == 2)
+    check("stage names are Build and Approve",
+          [s["name"] for s in parsed["stages"]] == ["Build", "Approve"])
+    check("Build stage starts on its stage line",
+          parsed["stages"][0]["line"] == find_line(
+              os.path.join(JENKINS_BAD, "Jenkinsfile"), "stage('Build')"))
+    check("Build stage holds 6 steps",
+          len(parsed["stages"][0]["steps"]) == 6)
+    check("Approve stage holds the input step",
+          len(parsed["stages"][1]["steps"]) == 1
+          and parsed["stages"][1]["steps"][0]["kind"] == "input")
+    check("input in the bad file is NOT inside a timeout",
+          not parsed["stages"][1]["steps"][0]["in_timeout"])
+    with open(os.path.join(JENKINS_CLEAN, "Jenkinsfile"),
+              encoding="utf-8") as fh:
+        clean_lines = fh.read().splitlines()
+    clean = ps.parse_jenkinsfile(clean_lines)
+    check("clean Jenkinsfile parses as balanced", clean["balanced"])
+    check("input in the clean file IS inside a timeout",
+          any(s["kind"] == "input" and s["in_timeout"]
+              for s in clean["steps"]))
+    # Findings now name their stage.
+    _c, findings, _s, _g = scan(JENKINS_BAD)
+    check("PG-015 finding in a stage names the stage",
+          any(x["line"] == find_line(
+                  os.path.join(JENKINS_BAD, "Jenkinsfile"),
+                  "curl -u admin") and "stage=Build" in x["object"]
+              for x in of_rule(findings, "PG-015")))
+    check("PG-015 finding outside any stage says top-level",
+          any(x["line"] == find_line(
+                  os.path.join(JENKINS_BAD, "Jenkinsfile"),
+                  "AKIAIOSFODNN7EXAMPLE") and "top-level" in x["object"]
+              for x in of_rule(findings, "PG-015")))
+    check("PG-017 finding names the Approve stage",
+          any("stage=Approve" in x["object"]
+              for x in of_rule(findings, "PG-017")))
+    # Braces inside strings and ${...} interpolation do not disturb depth.
+    tricky = [
+        "pipeline {",
+        "    stages {",
+        "        stage('One') {",
+        "            steps {",
+        "                sh \"echo ${params.X} and } brace in string\"",
+        "                sh 'echo } also here'",
+        "            }",
+        "        }",
+        "        stage('Two') {",
+        "            steps {",
+        "                echo 'done'",
+        "            }",
+        "        }",
+        "    }",
+        "}",
+    ]
+    parsed = ps.parse_jenkinsfile(tricky)
+    check("braces in strings do not break stage parsing",
+          parsed["balanced"]
+          and [s["name"] for s in parsed["stages"]] == ["One", "Two"])
+    check("unbalanced braces are reported",
+          not ps.parse_jenkinsfile(
+              ["pipeline {", "    stages {"])["balanced"])
+    # show_structure prints the stages without crashing.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ps.show_structure(JENKINS_BAD)
+    check("structure view lists both stages",
+          "Build" in buf.getvalue() and "Approve" in buf.getvalue())
+
+
+def step11():
+    print("\nStep 11 — Docker Hub digest check + API cache (v1.4)")
+    server = _fake_github_server()
+    hub = _fake_docker_hub_server()
+    old = os.environ.get("PIPE_SENTRY_GITHUB_API")
+    old_hub = os.environ.get("PIPE_SENTRY_DOCKER_HUB_API")
+    os.environ["PIPE_SENTRY_GITHUB_API"] = (
+        "http://127.0.0.1:%d" % server.server_address[1])
+    os.environ["PIPE_SENTRY_DOCKER_HUB_API"] = (
+        "http://127.0.0.1:%d" % hub.server_address[1])
+    cache_file = os.path.join(tempfile.gettempdir(), "ps_test_cache11.json")
+    if os.path.exists(cache_file):
+        os.unlink(cache_file)
+    _use_cache_file(cache_file)
+    try:
+        # Cache: the second identical online scan costs zero requests.
+        before_gh, before_hub = server.counts["n"], hub.counts["n"]
+        _c, findings1, _s, _g = scan(BAD_DIR, verify_online=True)
+        check("first online scan hits the GitHub API",
+              server.counts["n"] > before_gh)
+        check("first online scan hits Docker Hub",
+              hub.counts["n"] > before_hub)
+        check("first online scan: 42 findings", len(findings1) == 42)
+        after_first_gh, after_first_hub = (server.counts["n"],
+                                           hub.counts["n"])
+        _c, findings2, _s, _g = scan(BAD_DIR, verify_online=True)
+        check("second online scan makes no GitHub requests",
+              server.counts["n"] == after_first_gh)
+        check("second online scan makes no Docker Hub requests",
+              hub.counts["n"] == after_first_hub)
+        check("cached scan finds the same 42 findings",
+              len(findings2) == 42)
+        check("cache file was written", os.path.exists(cache_file))
+        # Direct unit checks against the fake Hub.
+        check("bare image name maps to library/",
+              ps.docker_hub_image("alpine") == ("library", "alpine"))
+        check("namespaced image keeps its namespace",
+              ps.docker_hub_image("myorg/myimg") == ("myorg", "myimg"))
+        check("other registries are out of scope for PG-022",
+              ps.docker_hub_image("ghcr.io/org/img") is None)
+        f, _n = ps.check_docker_online(
+            [{"image": "alpine", "ref": "sha256:" + "a" * 64,
+              "line": 1, "obj": "x"}], "t.yml", {})
+        check("real digest is found on the Hub", f == [])
+        f, _n = ps.check_docker_online(
+            [{"image": "alpine", "ref": "sha256:" + "0" * 64,
+              "line": 9, "obj": "x"}], "t.yml", {})
+        check("bogus digest fires PG-022 once",
+              len(of_rule(f, "PG-022")) == 1)
+        f, _n = ps.check_docker_online(
+            [{"image": "alpine", "ref": "no-such-tag",
+              "line": 9, "obj": "x"}], "t.yml", {})
+        check("missing tag fires PG-022 once",
+              len(of_rule(f, "PG-022")) == 1)
+        f, _n = ps.check_docker_online(
+            [{"image": "alpine", "ref": "3.19", "line": 9, "obj": "x"}],
+            "t.yml", {})
+        check("existing tag does not fire PG-022", f == [])
+        # --no-cache disables the cache entirely.
+        os.environ["PIPE_SENTRY_NO_CACHE"] = "1"
+        ps._API_DISK_CACHE = None
+        ps._API_DISK_CACHE_PATH = None
+        check("no-cache mode reports no cache path",
+              ps.api_cache_path() is None)
+        del os.environ["PIPE_SENTRY_NO_CACHE"]
+        ps._API_DISK_CACHE = None
+        ps._API_DISK_CACHE_PATH = None
+    finally:
+        if old is None:
+            del os.environ["PIPE_SENTRY_GITHUB_API"]
+        else:
+            os.environ["PIPE_SENTRY_GITHUB_API"] = old
+        if old_hub is None:
+            del os.environ["PIPE_SENTRY_DOCKER_HUB_API"]
+        else:
+            os.environ["PIPE_SENTRY_DOCKER_HUB_API"] = old_hub
+        _use_cache_file(None)
+        server.shutdown()
+        hub.shutdown()
+
+
+def step12():
+    print("\nStep 12 — repository settings check (--repo, PG-023/024/025)")
+    server = _fake_github_server()
+    old = os.environ.get("PIPE_SENTRY_GITHUB_API")
+    os.environ["PIPE_SENTRY_GITHUB_API"] = (
+        "http://127.0.0.1:%d" % server.server_address[1])
+    cache_file = os.path.join(tempfile.gettempdir(), "ps_test_cache12.json")
+    if os.path.exists(cache_file):
+        os.unlink(cache_file)
+    _use_cache_file(cache_file)
+    old_token = os.environ.get("GITHUB_TOKEN")
+    try:
+        # Without a token: nothing is checked, just a note.
+        os.environ.pop("GITHUB_TOKEN", None)
+        ps._API_DISK_CACHE = None
+        f, notes = ps.check_repo("octo/hello-world", {})
+        check("no token: no findings, 'needs a token' note",
+              f == [] and any("needs a token" in n for n in notes))
+        code, f, _s, _g = ps.scan_repo("octo/hello-world", _repo_args())
+        check("no token: repo-only scan exits 0 with no findings",
+              code == 0 and f == [])
+        # A bad --repo value is a note, not a crash.
+        f, notes = ps.check_repo("not-a-slug", {})
+        check("bad --repo value is a note, not a crash",
+              f == [] and any("Bad --repo" in n for n in notes))
+        # With a token: the wide-open repo fires all three rules.
+        os.environ["GITHUB_TOKEN"] = "test-token"
+        ps._API_DISK_CACHE = None
+        f, notes = ps.check_repo("octo/hello-world", {})
+        check("open repo: PG-023 fires (no branch protection)",
+              len(of_rule(f, "PG-023")) == 1)
+        check("open repo: PG-024 fires 3 times (all actions, write "
+              "default, can-approve)",
+              len(of_rule(f, "PG-024")) == 3)
+        check("open repo: PG-025 fires (broad OIDC claim)",
+              len(of_rule(f, "PG-025")) == 1)
+        check("open repo: 5 findings, score 60 grade D",
+              len(f) == 5 and ps.score_findings(f) == 60
+              and ps.grade_for(ps.score_findings(f)) == "D")
+        code, f, score, grade = ps.scan_repo("octo/hello-world",
+                                             _repo_args())
+        check("open repo: repo-only scan exits 1 (findings, no critical)",
+              code == 1 and len(f) == 5)
+        report = open(os.path.join(tempfile.gettempdir(),
+                                   "ps_test_repo.txt"),
+                      encoding="utf-8").read()
+        check("repo report carries the disclaimer verbatim",
+              ps.DISCLAIMER in report)
+        # A repo the token cannot see is a note, not a crash.
+        f, notes = ps.check_repo("octo/no-such-repo", {})
+        check("invisible repo is a note, not a crash",
+              f == [] and any("not found" in n for n in notes))
+        # The locked-down repo is clean.
+        f, notes = ps.check_repo("octo/clean-repo", {})
+        check("locked-down repo: 0 findings", f == [])
+        code, f, score, grade = ps.scan_repo("octo/clean-repo",
+                                             _repo_args())
+        check("locked-down repo: exit 0, score 100",
+              code == 0 and score == 100)
+        # Combined mode: clean files + open repo settings = 5 findings.
+        code, findings, score, grade = scan(
+            CLEAN_DIR, repo="octo/hello-world")
+        check("combined scan: clean files + open repo = 5 findings",
+              len(findings) == 5)
+        check("combined scan: exit 1", code == 1)
+    finally:
+        if old_token is None:
+            os.environ.pop("GITHUB_TOKEN", None)
+        else:
+            os.environ["GITHUB_TOKEN"] = old_token
+        if old is None:
+            del os.environ["PIPE_SENTRY_GITHUB_API"]
+        else:
+            os.environ["PIPE_SENTRY_GITHUB_API"] = old
+        _use_cache_file(None)
+        server.shutdown()
 
 
 def run_all_tests():
-    print("PipeSentry step tests — 7 steps from the build plan + steps 8-9")
+    print("PipeSentry step tests — 7 steps from the build plan + steps 8-12")
     print("=" * 58)
     step1()
     step2()
@@ -507,6 +915,9 @@ def run_all_tests():
     step7()
     step8()
     step9()
+    step10()
+    step11()
+    step12()
     print()
     print("=" * 58)
     print("PASSED: %d   FAILED: %d" % (PASSED, FAILED))

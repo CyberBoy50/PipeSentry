@@ -115,19 +115,35 @@ attack class that tags leave open.
 
 ## Test results
 
-`python run.py test` — **90 checks, all pass** (9 steps: the 7 from the
-build plan, plus step 8 for online SHA verification and step 9 for the
-typosquat check). Bad folder: 39 findings offline (5 critical, 20 high,
-12 medium, 2 low), 41 with `--verify-online` (PG-020 fires twice — on
-the bogus pin and on the typo pin in `ci.yml`); score 0/100, grade F,
+`python run.py test` — **157 checks, all pass** (12 steps: the 7 from the
+build plan, plus step 8 for online SHA verification, step 9 for the
+typosquat check, step 10 for the Jenkinsfile Groovy parser, step 11 for
+the Docker Hub digest check and the API cache, and step 12 for the
+`--repo` settings check). Bad folder: 39 findings offline (5 critical, 20 high,
+12 medium, 2 low), 42 with `--verify-online` (PG-020 fires twice — on
+the bogus pin and on the typo pin in `ci.yml` — and PG-022 fires once,
+on the bogus docker digest in `ci.yml`); score 0/100, grade F,
 exit code 2. Clean folder: 0 findings, score 100/100, grade A, exit
 code 0. Every finding's line number is asserted against the fixture
 file it came from.
 
-**PG-021 (v1.2) — the typosquat.** The bad `ci.yml` also uses
+**PG-021 (v1.2, expanded v1.4) — the typosquat.** The bad `ci.yml` also uses
 `actions/checkou@eef61447… # v4.2.1` — one letter missing from
 `actions/checkout`, pinned with the real checkout SHA on purpose, so
 offline it fires PG-021 only (no PG-005). The check compares every
-remote `uses:` name with 44 well-known actions; `checkou` scores 0.97
+remote `uses:` name with 150+ well-known actions; `checkou` scores 0.97
 against `checkout`, while exact names and unrelated custom actions
-never flag.
+never flag. With `--verify-online` the suspicion is confirmed against
+the GitHub API — `actions/checkou` does not exist upstream, `actions/checkout`
+does — and the evidence says so.
+
+**v1.4 — the last limits, closed.** Jenkinsfiles are parsed as Groovy
+now (stages and steps by brace matching, so a finding names its stage);
+`docker://` digests are verified against Docker Hub (PG-022); GitHub
+and Docker Hub responses are cached locally for 24 h so repeat runs
+cost no API requests; and `--repo owner/repo` (token-gated, opt-in)
+checks branch protection, Actions permissions and the OIDC subject
+claim (PG-023/024/025) — without a token it reports "not checked —
+needs a token" instead of failing. The v1.3 report listed five
+remaining limits; all five are closed, and the step tests prove each
+one (steps 10–12).

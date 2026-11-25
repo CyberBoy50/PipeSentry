@@ -4,7 +4,7 @@
 Usage:
     python run.py setup        # create venv + install dependencies (first time)
     python run.py scan <path>  # audit pipeline files in a file or folder
-    python run.py test         # run the 7 build-plan step tests
+    python run.py test         # run the step tests
     python run.py doctor       # check the setup
     python run.py checks       # list all checks
     python run.py structure <path>  # show the parsed structure
@@ -87,6 +87,11 @@ def cmd_doctor(_args):
                        ("test Jenkinsfile (clean)", "test_jenkins/clean")):
         full = os.path.join(HERE, rel)
         print("[%s] %s: %s" % ("+" if os.path.isdir(full) else "!", label, full))
+    if os.environ.get("GITHUB_TOKEN"):
+        print("[+] GITHUB_TOKEN is set — online checks get 5,000 req/hour")
+    else:
+        print("[!] GITHUB_TOKEN is not set — online checks use 60 req/hour "
+              "unauthenticated; --repo needs a token")
     print("-" * 40)
     problems = (vp is None)
     try:

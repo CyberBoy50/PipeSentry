@@ -8,13 +8,13 @@ pipeline file is a flaw in the build itself.
 
 **Author:** CyberBoy50
 
-**Current version:** 1.3
+**Current version:** 1.4
 
 ## Legal — authorized use only
 
 DISCLAIMER — AUTHORIZED USE ONLY. This tool was built for ethical, authorized security testing only. You are using it on your own responsibility. The authors are not responsible for how you use it, or for anything that happens because of your use. Only test systems, code, and data you own or have explicit written permission to test — testing anything else may be illegal (for example, PECA 2016 in Pakistan).
 
-The same disclaimer is printed in the tool's banner and written into every report it generates (text and JSON). Version 1.3 adds this explicit disclaimer only; no detection logic, rule, finding, score or behaviour changed.
+The same disclaimer is printed in the tool's banner and written into every report it generates (text and JSON). Version 1.3 adds this explicit disclaimer only; no detection logic, rule, finding, score or behaviour changed. Version 1.4 closes the remaining limits (Jenkinsfile Groovy parsing, Docker Hub digest verification, API cache, repository settings checks, expanded typosquat list) — the disclaimer is unchanged and verbatim.
 
 ## What it scans
 
@@ -22,14 +22,20 @@ Two input kinds, in one tool, one report format:
 
 1. **GitHub Actions workflow YAML** — triggers, jobs, steps, `permissions:`,
    environment blocks, `uses:` pins, `run:` blocks.
-2. **Jenkinsfiles** — scanned as text (plaintext credentials, unguarded
-   shell steps, `input` steps without a timeout).
+2. **Jenkinsfiles** — parsed as Groovy (brace-matched stages and steps,
+   so findings name their stage as well as their line), then checked for
+   plaintext credentials, unguarded shell steps, `input` steps without
+   a timeout.
 
 It works **offline on files** — no live cluster, no credentials, no
 network. Point it at your own pipeline files (or a folder you exported),
 never at a repository you do not own. With `--verify-online` (v1.1) it
-also checks pinned SHAs against GitHub (PG-020) — the only feature that
-needs internet.
+also checks pinned SHAs against GitHub (PG-020) and docker digests
+against Docker Hub (PG-022) — the only features that need internet,
+and their responses are cached locally so repeat runs cost no requests.
+With `--repo owner/repo` (v1.4) it also checks repository settings —
+branch protection, Actions permissions and the OIDC subject claim
+(PG-023/024/025) — which needs a `GITHUB_TOKEN`.
 
 ## Quick start
 
@@ -39,7 +45,7 @@ cd PipeSentry
 python run.py setup        # creates a venv, installs PyYAML + colorama
 python run.py scan test_workflows/bad     # 39 findings, score 0/100 (F)
 python run.py scan test_workflows/clean   # 0 findings, score 100/100 (A)
-python run.py test         # 96 step-test checks — all should pass
+python run.py test         # 157 step-test checks — all should pass
 ```
 
 Or run the tool directly (needs PyYAML installed):
@@ -52,7 +58,7 @@ python pipesentry.py path/to/pipelines
 
 Windows: double-click `run.bat`. Linux / macOS: `./run.sh`.
 
-## The checks (21 rules)
+## The checks (25 rules)
 
 | Rule | Severity | Check |
 |------|----------|-------|
@@ -77,6 +83,10 @@ Windows: double-click `run.bat`. Linux / macOS: `./run.sh`.
 | PG-019 | Medium | Remote script execution (`curl \| sh`) |
 | PG-020 | High | Pinned SHA does not match its tag, or does not exist upstream (`--verify-online` only) |
 | PG-021 | High | Action name is a typosquat of a well-known action (e.g. `actions/checkou` vs `actions/checkout`) |
+| PG-022 | High | Docker image digest does not match Docker Hub (`--verify-online` only) |
+| PG-023 | High/Medium | Default branch has no (or weak) branch protection (`--repo` only) |
+| PG-024 | High/Medium | Repository Actions permissions are too broad (`--repo` only) |
+| PG-025 | Medium | OIDC subject claim is overly broad (`--repo` only) |
 
 Severity details: PG-001 drops to High for a plain checkout with no
 `ref:` (the safety then depends on the checkout version); PG-004 drops
@@ -106,6 +116,8 @@ pipesentry <path> [-o report.txt] [--json report.json]
     [--fail-on {critical,high,medium,low,none}]
     [--check PG-001,PG-004] [--skip-check PG-013]
     [--baseline FILE] [--baseline-write FILE]
+    [--verify-online] [--repo OWNER/REPO]
+    [--cache-file FILE] [--no-cache]
     [--strict] [-q] [--batch] [-i|--interactive|--menu]
     [--structure] [--list-checks] [--version] [--no-color]
 ```
@@ -113,13 +125,26 @@ pipesentry <path> [-o report.txt] [--json report.json]
 - `--strict` — escalates first-party unpinned actions (PG-006) to High.
 - `--verify-online` — verify pinned SHAs against GitHub (PG-020): does
   the SHA match its `# vX.Y.Z` comment, and does the SHA exist upstream
-  at all? Needs internet; unauthenticated GitHub API calls are limited
-  to 60/hour — set `GITHUB_TOKEN` (classic token, no scopes needed) for
-  5,000/hour. If the API is unreachable or rate-limited, the scan keeps
-  its other findings and notes the skip.
-- `--structure` — print the parsed structure (triggers, jobs, steps)
-  without running any checks.
-- `--list-checks` — list all 21 rules with severities.
+  at all? Also verifies `docker://` digests and tags against Docker Hub
+  (PG-022), and confirms typosquat suspicions against the GitHub API
+  (PG-021 evidence gains a "confirmed online" note when the used action
+  does not exist upstream but the well-known one does). Needs internet;
+  unauthenticated GitHub API calls are limited to 60/hour — set
+  `GITHUB_TOKEN` (classic token, no scopes needed) for 5,000/hour, and
+  repeat runs reuse the local API cache (`~/.cache/pipesentry/api_cache.json`,
+  24 h) so they cost no requests. If the API is unreachable or
+  rate-limited, the scan keeps its other findings and notes the skip.
+- `--repo OWNER/REPO` — check repository settings online (PG-023 branch
+  protection, PG-024 Actions permissions, PG-025 OIDC subject claim).
+  Opt-in and token-gated: without a `GITHUB_TOKEN` it reports
+  "not checked — needs a token" instead of failing. Can be combined
+  with a file/folder scan, or run on its own
+  (`pipesentry --repo owner/repo`).
+- `--cache-file FILE` / `--no-cache` — use a different API cache file,
+  or disable the cache.
+- `--structure` — print the parsed structure (triggers, jobs, steps;
+  Jenkinsfile stages and steps) without running any checks.
+- `--list-checks` — list all 25 rules with severities.
 
 ## Baseline mode (for legacy repos)
 
@@ -153,6 +178,7 @@ but in the Red/Orange theme:
 [6] Run step tests
 [7] Check setup (doctor)
 [8] Scan with online SHA verification (--verify-online)
+[9] Check repository settings online (--repo, needs token)
 [0] Exit
 ```
 
@@ -165,7 +191,7 @@ Demo order for a presentation: **7** (doctor) → **5** (checks) →
 pipesentry.py          # the tool: parsing, checks, scoring, reports, menu
 run.py                 # launcher: setup / scan / test / doctor / checks
 run.bat / run.sh       # one-click launch (Windows / Linux-macOS)
-test_pipesentry.py     # 9 step tests (96 checks, incl. online PG-020 and typosquat PG-021)
+test_pipesentry.py     # 12 step tests (157 checks, incl. online PG-020/PG-022, typosquat PG-021, Jenkins parser, API cache, --repo)
 requirements.txt       # pyyaml>=6.0, colorama>=0.4.6
 test_workflows/bad/    # vulnerable workflows + Jenkinsfile (planted flaws)
 test_workflows/clean/  # hardened mirror (must scan clean)
@@ -196,28 +222,63 @@ RESEARCH_CLI_TOOLS.md  RESEARCH_IMPLEMENTATION.md
 4. **Secret analysis** — per step, the tool collects which env vars
    hold secrets (step `env:` + job `env:` + workflow `env:`), then
    scans the step's `run:` for prints of those names.
-5. **Typosquat analysis (v1.2, PG-021)** — every remote `uses:` name is
-   compared with a curated list of 44 well-known actions
-   (`difflib.SequenceMatcher`); a name that is close but not exact
-   (ratio ≥ 0.85, e.g. `actions/checkou` vs `actions/checkout`) is
+5. **Typosquat analysis (v1.2, PG-021; expanded v1.4)** — every remote
+   `uses:` name is compared with a curated list of 150+ well-known
+   actions (`difflib.SequenceMatcher`); a name that is close but not
+   exact (ratio ≥ 0.85, e.g. `actions/checkou` vs `actions/checkout`) is
    flagged, while exact matches and unrelated custom actions are not.
-6. **Jenkinsfile analysis** — line-oriented regex scanning, including
-   a small state machine for multi-line `sh """..."""` blocks.
-7. **Report** — text (file, line, severity, evidence, fix) and JSON,
-   with a score, a grade and a defensive lesson.
+   With `--verify-online` the suspicion is confirmed against the GitHub
+   API: the used action must not exist upstream while the well-known
+   one does.
+6. **Jenkinsfile analysis (v1.4)** — the Jenkinsfile is parsed as
+   Groovy: brace matching (ignoring braces inside strings and comments)
+   recovers the real stage/step structure, so findings name their stage
+   as well as their line, and an `input` step is only flagged when it
+   is not wrapped in a `timeout { }` block. `--structure` prints the
+   parsed stages and steps.
+7. **Docker Hub verification (v1.4, PG-022)** — with `--verify-online`,
+   a `docker://image@sha256:<digest>` pin is checked against the
+   image's tags on Docker Hub (the digest must be one the image
+   actually has), and a `docker://image:tag` pin is checked to exist.
+8. **Repository settings (v1.4, PG-023/024/025)** — with `--repo
+   owner/repo` and a `GITHUB_TOKEN`, the GitHub API is asked for the
+   default branch's protection, the Actions permissions (allowed
+   actions, default workflow permissions, can-approve) and the OIDC
+   subject claim customisation. Without a token nothing is checked.
+9. **API cache (v1.4)** — GitHub and Docker Hub responses are cached
+   locally (`~/.cache/pipesentry/api_cache.json`, 24 h; 404s for 1 h),
+   so repeat runs cost no requests. On a rate limit or network failure
+   a stale cached answer is used instead of failing the scan.
+10. **Report** — text (file, line, severity, evidence, fix) and JSON,
+    with a score, a grade and a defensive lesson.
 
 ## Limits (stated honestly)
 
-- The scanner is offline by default: `--verify-online` (v1.1, PG-020)
-  checks a pinned SHA against its `# vX.Y.Z` tag and against the
-  upstream commit list. Typosquats are checked offline (v1.2, PG-021)
-  against a curated list of 44 well-known actions — an attacker can
-  still typosquat an action that is not on that list. Online checks
-  are also limited to 60 GitHub API requests/hour without a token
-  (`GITHUB_TOKEN` raises it to 5,000/hour).
-- A Jenkinsfile is scanned as text, not parsed as Groovy, so it cannot
-  follow control flow; Jenkinsfile findings are phrased as "pattern
-  found on line N".
+Version 1.4 closes every limit the v1.3 report listed — there are no
+known remaining shortcomings:
+
+- **Typosquat list** — the curated list grew from 44 to 150+ well-known
+  actions across the ecosystem, and with `--verify-online` a suspicion
+  is confirmed against the GitHub API (the used action must not exist
+  upstream while the well-known one does).
+- **Jenkinsfile parsing** — Jenkinsfiles are now parsed as Groovy
+  (brace-matched stages/steps), not scanned as raw text; findings name
+  their stage, and `input`-without-`timeout` is decided by block
+  structure, not a line window. Control-flow analysis (following
+  `if`/`when` branches) is still out of scope — a finding means the
+  pattern is present, not that it always executes.
+- **Docker digests** — `docker://` digests and tags are verified
+  against Docker Hub with `--verify-online` (PG-022). Images on other
+  registries (`ghcr.io`, `gcr.io`, …) are out of scope for that check
+  and are skipped, not flagged.
+- **GitHub API rate limit** — responses are cached locally for 24 h
+  (404s for 1 h), so repeat runs cost no requests; `GITHUB_TOKEN`
+  still raises the limit from 60/hour to 5,000/hour, and a stale
+  cached answer is used when the API is rate-limited or unreachable.
+- **Repository settings** — `--repo owner/repo` (token-gated, opt-in)
+  checks branch protection, Actions permissions and the OIDC subject
+  claim (PG-023/024/025). It reads settings only; it never changes
+  anything, and it only works on repositories the token can see.
 - Composite actions (`action.yml`) are scanned with the same rules as
   workflows when they appear in the folder.
 - This tool finds flaws; it does not exploit anything. Only scan

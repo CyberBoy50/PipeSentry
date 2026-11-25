@@ -11,14 +11,17 @@ in the pipeline file is a flaw in the build itself.
 Two input kinds:
   1. GitHub Actions workflow YAML — triggers, jobs, steps, permissions,
      environment blocks, uses: pins, run: blocks.
-  2. Jenkinsfiles — scanned as text (plaintext credentials, unguarded
-     shell steps, input steps without a timeout).
+  2. Jenkinsfiles — parsed as Groovy (brace-matched stages/steps) and
+     scanned for plaintext credentials, unguarded shell steps and
+     input steps without a timeout.
 
 It works on FILES ONLY — no live cluster, no credentials, no network.
 Point it at your own pipeline files (or a folder you exported), never
-at a repository you do not own.
+at a repository you do not own. Online features (--verify-online,
+--repo) read public API data only, cache responses locally, and need a
+GITHUB_TOKEN only for repository settings.
 
-Version: 1.3
+Version: 1.4
 """
 import argparse
 import difflib
@@ -32,7 +35,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "1.3"
+VERSION = "1.4"
 AUTHOR = "CyberBoy50"
 
 # Explicit responsibility disclaimer — printed in the banner, written
@@ -291,7 +294,7 @@ def banner():
     # TraceRecon-style box under the banner, like SSTIProbe / RBACLens.
     print(f"{C.RED}")
     print("┌" + "─" * 50 + "┐")
-    print("│" + ("PipeSentry v" + VERSION + " — files + online SHA + typosquat").center(50) + "│")
+    print("│" + ("PipeSentry v" + VERSION + " — files + online + repo").center(50) + "│")
     print("│" + "For authorized use only".center(50) + "│")
     print("└" + "─" * 50 + "┘")
     print(f"{C.RST}", end="")
@@ -366,6 +369,26 @@ RULES = {
                "high",
                "Use the exact official action name; verify the owner/repo "
                "on the action's official page before trusting it."),
+    "PG-022": ("Docker image digest does not match Docker Hub",
+               "high",
+               "Re-pin the docker:// action to a digest that exists for "
+               "that image on Docker Hub (docker pull image@sha256:<digest> "
+               "to confirm it), and fix the tag if it does not exist."),
+    "PG-023": ("Default branch has no (or weak) branch protection",
+               "high",
+               "Turn on branch protection for the default branch: require "
+               "a pull request review and required status checks before "
+               "merging, and enforce it for administrators."),
+    "PG-024": ("Repository Actions permissions are too broad",
+               "high",
+               "Restrict Actions permissions to selected actions (or "
+               "local-only) and set the default workflow permissions to "
+               "read — a workflow should only get the writes it needs."),
+    "PG-025": ("OIDC subject claim is overly broad",
+               "medium",
+               "Scope the OIDC subject claim to a branch or an environment "
+               "(add a :ref: or :environment: qualifier) so a minted token "
+               "cannot be replayed from any ref."),
 }
 
 FIRST_PARTY = {"actions", "github"}   # GitHub-authored actions
@@ -931,11 +954,14 @@ def check_secret_echo(data, file):
     return findings
 
 
-def check_pinning(data, file, strict=False, raw_lines=None, pinned_out=None):
+def check_pinning(data, file, strict=False, raw_lines=None, pinned_out=None,
+                  docker_out=None):
     """PG-005 / PG-006 — every uses: pinned to a full commit SHA?
     Pinned actions are also collected into pinned_out (when given) for
     the online check (PG-020): owner, repo, SHA, line, object, and the
-    # vX.Y.Z comment on the same raw line, if any."""
+    # vX.Y.Z comment on the same raw line, if any. Docker actions are
+    collected into docker_out (when given) for the Docker Hub digest
+    check (PG-022)."""
     findings = []
 
     def check_one(uses, line, obj):
@@ -944,8 +970,26 @@ def check_pinning(data, file, strict=False, raw_lines=None, pinned_out=None):
             return
         if parsed["kind"] == "docker":
             ref = parsed.get("ref") or ""
-            if SHA256_RE.match(ref.lstrip("sha256:")) and ref.startswith("sha256:"):
+            # A digest pin is pinned — but only a real sha256: digest
+            # counts. (v1.3 used ref.lstrip("sha256:") here, which strips
+            # any leading s/h/a/2/5/6/: characters — a digest starting
+            # with 'a' lost characters and was wrongly flagged.)
+            if ref.startswith("sha256:") and SHA256_RE.match(ref[7:]):
+                if docker_out is not None:
+                    docker_out.append({
+                        "image": parsed.get("image") or "",
+                        "ref": ref,
+                        "line": line,
+                        "obj": obj,
+                    })
                 return
+            if docker_out is not None:
+                docker_out.append({
+                    "image": parsed.get("image") or "",
+                    "ref": ref,
+                    "line": line,
+                    "obj": obj,
+                })
             findings.append(make_finding(
                 file, line, "PG-005", "high", obj,
                 "Docker action %s is not pinned by digest — use "
@@ -1003,6 +1047,7 @@ def check_pinning(data, file, strict=False, raw_lines=None, pinned_out=None):
 # actions (my-org/my-action) score far below the threshold and never
 # flag either.
 KNOWN_ACTIONS = [
+    # GitHub-authored (actions/*, github/*)
     "actions/checkout",
     "actions/setup-node",
     "actions/setup-python",
@@ -1011,8 +1056,11 @@ KNOWN_ACTIONS = [
     "actions/setup-dotnet",
     "actions/setup-ruby",
     "actions/cache",
+    "actions/cache/restore",
+    "actions/cache/save",
     "actions/upload-artifact",
     "actions/download-artifact",
+    "actions/upload-release-asset",
     "actions/github-script",
     "actions/labeler",
     "actions/stale",
@@ -1021,32 +1069,144 @@ KNOWN_ACTIONS = [
     "actions/deploy-pages",
     "actions/upload-pages-artifact",
     "actions/attest-build-provenance",
+    "actions/attest-sbom",
     "actions/create-github-app-token",
     "actions/first-interaction",
+    "actions/delete-package-versions",
+    "actions/add-to-project",
+    "github/codeql-action/init",
+    "github/codeql-action/analyze",
+    "github/codeql-action/upload-sarif",
+    "github/codeql-action/autobuild",
+    "github/codeql-action/resolve-environment",
+    "github/super-linter",
+    # Docker
     "docker/build-push-action",
     "docker/login-action",
     "docker/setup-buildx-action",
     "docker/setup-qemu-action",
     "docker/metadata-action",
+    "docker/bake-action",
+    # Popular third-party actions
     "tj-actions/changed-files",
+    "tj-actions/verify-changed-files",
     "softprops/action-gh-release",
+    "softprops/turnstyle",
     "peter-evans/create-pull-request",
     "peter-evans/create-or-update-comment",
-    "github/codeql-action/init",
-    "github/codeql-action/analyze",
-    "github/codeql-action/upload-sarif",
+    "peter-evans/create-issue-from-file",
+    "peter-evans/repository-dispatch",
+    "peter-evans/slash-command-dispatch",
+    "peter-evans/close-issue",
     "stefanzweifel/git-auto-commit-action",
     "peaceiris/actions-gh-pages",
     "JamesIves/github-pages-deploy-action",
+    "EndBug/add-and-commit",
+    "tibdex/github-app-token",
+    "octokit/request-action",
+    "hmarr/auto-approve-action",
+    "dorny/paths-filter",
+    "dorny/test-reporter",
+    "nick-fields/retry",
+    "svenstaro/upload-release-action",
+    "mikefarah/yq",
+    "dawidd6/action-download-artifact",
+    "dependabot/fetch-metadata",
+    "EnricoMi/publish-unit-test-result-action",
+    "crazy-max/ghaction-import-gpg",
+    "crazy-max/ghaction-setup-docker",
+    "sigstore/cosign-installer",
+    "sigstore/gh-action-sigstore-python",
+    # Cloud
     "aws-actions/configure-aws-credentials",
     "aws-actions/amazon-ecr-login",
+    "aws-actions/amazon-ecs-deploy-task-definition",
+    "aws-actions/amazon-ecs-render-task-definition",
+    "aws-actions/setup-sam",
     "google-github-actions/auth",
+    "google-github-actions/setup-gcloud",
+    "google-github-actions/deploy-cloudrun",
+    "google-github-actions/upload-cloud-storage",
+    "google-github-actions/get-secretmanager-secrets",
+    "google-github-actions/release-please-action",
     "azure/login",
+    "azure/setup-kubectl",
+    "azure/aks-set-context",
+    "azure/webapps-deploy",
+    "azure/functions-action",
+    "azure/docker-login",
+    "azure/setup-helm",
+    "azure/arm-deploy",
+    "azure/static-web-apps-deploy",
+    # IaC
     "hashicorp/setup-terraform",
+    "hashicorp/vault-action",
+    "hashicorp/setup-packer",
+    "terraform-linters/setup-tflint",
+    "dflook/terraform-plan",
+    "dflook/terraform-apply",
+    # Security scanners
     "codecov/codecov-action",
+    "coverallsapp/github-action",
     "ossf/scorecard-action",
     "step-security/harden-runner",
-    "github/super-linter",
+    "anchore/scan-action",
+    "anchore/sbom-action",
+    "aquasecurity/trivy-action",
+    "snyk/actions/setup",
+    "snyk/actions/node",
+    "snyk/actions/python",
+    "snyk/actions/docker",
+    "snyk/actions/iac",
+    "SonarSource/sonarqube-scan-action",
+    "SonarSource/sonarqube-quality-gate-action",
+    "SonarSource/sonarcloud-github-action",
+    "gitleaks/gitleaks-action",
+    "trufflesecurity/trufflehog",
+    "gitguardian/ggshield-action",
+    "bridgecrewio/checkov-action",
+    "tfsec/tfsec-sarif-action",
+    "tfsec/tfsec-pr-commenter-action",
+    "microsoft/security-devops-action",
+    "dependency-check/Dependency-Check_Action",
+    # Linters / languages
+    "reviewdog/action-setup",
+    "reviewdog/action-shellcheck",
+    "reviewdog/action-eslint",
+    "golangci/golangci-lint-action",
+    "goreleaser/goreleaser-action",
+    "ruby/setup-ruby",
+    "gradle/actions/setup-gradle",
+    "gradle/gradle-build-action",
+    "shivammathur/setup-php",
+    "pnpm/action-setup",
+    "oven-sh/setup-bun",
+    "denoland/setup-deno",
+    "dtolnay/rust-toolchain",
+    "Swatinem/rust-cache",
+    "taiki-e/install-action",
+    "subosito/flutter-action",
+    "android-actions/setup-android",
+    "apple-actions/import-codesign-certs",
+    "maierj/fastlane-action",
+    "reactivecircus/android-emulator-runner",
+    "uraimo/run-on-arch-action",
+    "foundry-rs/foundry-toolchain",
+    # Release automation
+    "wagoid/commitlint-github-action",
+    "amannn/action-semantic-pull-request",
+    "paulhatch/semantic-version",
+    "changesets/action",
+    "release-drafter/release-drafter",
+    "marvinpinto/action-automatic-releases",
+    # Notifications
+    "8398a7/action-slack",
+    "slackapi/slack-github-action",
+    "rtCamp/action-slack-notify",
+    # Kubernetes / containers
+    "helm/kind-action",
+    "redhat-actions/buildah-build",
+    "redhat-actions/push-to-registry",
 ]
 
 TYPO_RATIO = 0.85  # SequenceMatcher ratio: close, but not exact
@@ -1065,10 +1225,14 @@ def closest_known_action(action):
     return best_ratio, best_known
 
 
-def check_typosquat(data, file):
+def check_typosquat(data, file, online_checker=None):
     """PG-021 — every remote uses: checked against KNOWN_ACTIONS.
     Local ./ actions and docker:// are skipped (they are not GitHub
-    action names, so they cannot typosquat one)."""
+    action names, so they cannot typosquat one). When online_checker
+    is given (online mode), a close match is confirmed against the
+    GitHub API: the used name does not exist upstream while the known
+    one does — so a private fork with a similar name is never
+    mislabelled a typosquat on the API's word alone."""
     findings = []
 
     def check_one(uses, line, obj):
@@ -1080,11 +1244,15 @@ def check_typosquat(data, file):
                               parsed.get("path") or "")
         ratio, known = closest_known_action(action)
         if TYPO_RATIO <= ratio < 1.0:
+            evidence = ("uses: %s@%s is very close to the well-known "
+                        "action %s — possible typosquat"
+                        % (action, parsed.get("ref") or "(no ref)", known))
+            if online_checker is not None:
+                note = online_checker(action, known)
+                if note:
+                    evidence += " (%s)" % note
             findings.append(make_finding(
-                file, line, "PG-021", "high", obj,
-                "uses: %s@%s is very close to the well-known action %s "
-                "— possible typosquat" % (
-                    action, parsed.get("ref") or "(no ref)", known),
+                file, line, "PG-021", "high", obj, evidence,
                 key_obj=obj))
 
     for job_id, i, step, sline in iter_steps(data):
@@ -1124,9 +1292,120 @@ def gh_url(path):
     return base + path
 
 
+# ---------------------------------------------------------------- API cache
+# v1.4 — local cache for GitHub / Docker Hub API responses, so repeat
+# runs do not burn the rate limit. The unauthenticated GitHub limit is
+# 60 requests/hour per IP; a cached tag lookup costs zero requests.
+# Cache file: ~/.cache/pipesentry/api_cache.json (override with
+# PIPE_SENTRY_CACHE_FILE, disable with PIPE_SENTRY_NO_CACHE=1 or
+# --no-cache). Successful responses live 24 h, "does not exist" (404)
+# answers 1 h. On a rate limit or a network failure, a stale cached
+# answer is still returned rather than failing the whole scan.
+CACHE_TTL_SECONDS = 86400        # 24 h for successful responses
+CACHE_TTL_404_SECONDS = 3600     # 1 h for 404 ("does not exist") answers
+_API_DISK_CACHE = None           # {key: {"at": epoch, "status": int, "body": obj}}
+_API_DISK_CACHE_PATH = None
+_API_DISK_CACHE_DIRTY = False
+
+
+def api_cache_path():
+    """Cache file path, or None when caching is disabled."""
+    if os.environ.get("PIPE_SENTRY_NO_CACHE") == "1":
+        return None
+    override = os.environ.get("PIPE_SENTRY_CACHE_FILE")
+    if override:
+        return override
+    return os.path.join(os.path.expanduser("~"), ".cache", "pipesentry",
+                        "api_cache.json")
+
+
+def _get_disk_cache():
+    """(path, entries): lazily load the disk cache once per process."""
+    global _API_DISK_CACHE, _API_DISK_CACHE_PATH
+    if _API_DISK_CACHE is not None:
+        return _API_DISK_CACHE_PATH, _API_DISK_CACHE
+    path = api_cache_path()
+    _API_DISK_CACHE_PATH = path
+    _API_DISK_CACHE = {}
+    if path:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and data.get("version") == 1:
+                _API_DISK_CACHE = data.get("entries") or {}
+        except (OSError, ValueError):
+            _API_DISK_CACHE = {}
+    return path, _API_DISK_CACHE
+
+
+def _save_disk_cache():
+    """Write the disk cache back (best effort — a scan must never fail
+    because the cache directory is not writable)."""
+    global _API_DISK_CACHE_DIRTY
+    path, entries = _get_disk_cache()
+    if not path or not _API_DISK_CACHE_DIRTY:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "entries": entries}, fh, indent=2)
+        os.replace(tmp, path)
+        _API_DISK_CACHE_DIRTY = False
+    except OSError:
+        pass
+
+
+def _cache_key(url):
+    """Cache key for a URL. Authenticated and unauthenticated answers
+    are kept apart — a 404 seen without a token must not shadow the
+    real answer once a token is set."""
+    if os.environ.get("GITHUB_TOKEN"):
+        return url + "#auth"
+    return url
+
+
+def _disk_lookup(url, allow_stale=False):
+    """(status, body) for a cached URL, or None. Fresh entries honour
+    their TTL; allow_stale=True also returns expired ones (used as a
+    fallback when the API is rate-limited or unreachable)."""
+    _path, entries = _get_disk_cache()
+    entry = entries.get(_cache_key(url))
+    if not entry or not isinstance(entry, dict):
+        return None
+    ttl = (CACHE_TTL_404_SECONDS if entry.get("status") == 404
+           else CACHE_TTL_SECONDS)
+    if not allow_stale and time.time() - entry.get("at", 0) > ttl:
+        return None
+    return entry.get("status"), entry.get("body")
+
+
+def _disk_store(url, status, body):
+    """Store one API response in the disk cache."""
+    global _API_DISK_CACHE_DIRTY
+    _path, entries = _get_disk_cache()
+    if _path is None:
+        return
+    entries[_cache_key(url)] = {"at": time.time(), "status": status,
+                                "body": body}
+    _API_DISK_CACHE_DIRTY = True
+    _save_disk_cache()
+
+
+def cache_stats():
+    """(path, entry_count) for the doctor output."""
+    path, entries = _get_disk_cache()
+    return path, len(entries)
+
+
 def github_api_get(url, timeout=10):
     """GET a GitHub API URL. Returns parsed JSON, or None on 404.
-    Raises ValueError on network failure, rate limit, or other errors."""
+    Raises ValueError on network failure, rate limit, or other errors.
+    Fresh disk-cache hits cost no request; on a rate limit or network
+    failure a stale cached answer is returned instead of raising."""
+    fresh = _disk_lookup(url)
+    if fresh is not None:
+        return fresh[1] if fresh[0] == 200 else None
     req = urllib.request.Request(url, headers={
         "User-Agent": "PipeSentry/%s" % VERSION,
         "Accept": "application/vnd.github+json",
@@ -1136,17 +1415,173 @@ def github_api_get(url, timeout=10):
         req.add_header("Authorization", "Bearer %s" % token)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            body = json.loads(resp.read().decode("utf-8"))
+        _disk_store(url, 200, body)
+        return body
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
+            _disk_store(url, 404, None)
             return None
-        if exc.code == 403:
+        if exc.code in (403, 429):
+            stale = _disk_lookup(url, allow_stale=True)
+            if stale is not None:
+                return stale[1] if stale[0] == 200 else None
             raise ValueError(
-                "GitHub API rate limit hit (403) — set GITHUB_TOKEN "
-                "for 5,000 requests/hour, or wait an hour.") from exc
+                "GitHub API rate limit hit (%s) — set GITHUB_TOKEN "
+                "for 5,000 requests/hour, or wait an hour." % exc.code) from exc
         raise ValueError("GitHub API error %s for %s" % (exc.code, url)) from exc
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        stale = _disk_lookup(url, allow_stale=True)
+        if stale is not None:
+            return stale[1] if stale[0] == 200 else None
         raise ValueError("Cannot reach GitHub API (%s) — offline?" % exc) from exc
+
+
+def repo_exists(owner, repo, cache):
+    """True if owner/repo exists on GitHub (cached per run). Used to
+    confirm a typosquat online: the used name 404s while the known
+    one exists."""
+    key = ("repo", owner, repo)
+    if key in cache:
+        return cache[key]
+    try:
+        exists = github_api_get(gh_url("/repos/%s/%s" % (owner, repo))) is not None
+    except ValueError:
+        exists = None  # unknown — network/rate limit; do not claim either way
+    cache[key] = exists
+    return exists
+
+
+def typosquat_online_checker(cache):
+    """Build the online_checker for check_typosquat: returns a
+    confirmation note when the used action does not exist upstream
+    but the well-known one does, else None."""
+    def checker(action, known):
+        owner, _, repo_path = action.partition("/")
+        repo = repo_path.split("/")[0]
+        known_owner, _, known_path = known.partition("/")
+        known_repo = known_path.split("/")[0]
+        used = repo_exists(owner, repo, cache)
+        target = repo_exists(known_owner, known_repo, cache)
+        if used is False and target is True:
+            return "confirmed online: %s does not exist upstream, %s does" % (
+                action, known)
+        return None
+    return checker
+
+
+# Docker Hub (v1.4, PG-022) — public tag API, no auth needed.
+DOCKER_HUB_API = "https://hub.docker.com"
+
+
+def docker_hub_url(path):
+    """Full Docker Hub API URL for a path, honouring the test override."""
+    base = os.environ.get("PIPE_SENTRY_DOCKER_HUB_API",
+                          DOCKER_HUB_API).rstrip("/")
+    return base + path
+
+
+def docker_hub_get(url, timeout=10):
+    """GET a Docker Hub API URL. Returns parsed JSON, or None on 404.
+    Raises ValueError on network failure or other errors. Shares the
+    same disk cache as the GitHub API."""
+    fresh = _disk_lookup(url)
+    if fresh is not None:
+        return fresh[1] if fresh[0] == 200 else None
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "PipeSentry/%s" % VERSION,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        _disk_store(url, 200, body)
+        return body
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            _disk_store(url, 404, None)
+            return None
+        stale = _disk_lookup(url, allow_stale=True)
+        if stale is not None:
+            return stale[1] if stale[0] == 200 else None
+        raise ValueError("Docker Hub API error %s for %s" % (exc.code, url)) from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        stale = _disk_lookup(url, allow_stale=True)
+        if stale is not None:
+            return stale[1] if stale[0] == 200 else None
+        raise ValueError("Cannot reach Docker Hub API (%s) — offline?" % exc) from exc
+
+
+def docker_hub_image(image):
+    """(namespace, repo) for a docker:// image, or None when it is not
+    a Docker Hub image (another registry — out of scope for PG-022).
+    A bare name (alpine) is the official library/alpine image."""
+    if "/" in image and "." in image.split("/")[0]:
+        return None  # registry host present, e.g. ghcr.io/org/img
+    if image.startswith("docker.io/"):
+        image = image[len("docker.io/"):]
+    if "/" not in image:
+        return ("library", image)
+    namespace, repo = image.split("/", 1)
+    if "/" in repo:
+        return None  # nested path — not a plain Hub image
+    return (namespace, repo)
+
+
+def check_docker_online(docker_entries, file, cache):
+    """PG-022 — verify every docker:// action collected by
+    check_pinning against Docker Hub. A digest pin must be a digest
+    the image actually has; a tag pin must be a tag that exists.
+    Returns (findings, notes): notes are non-fatal problems (network
+    down) — the scan keeps its other findings either way."""
+    findings, notes = [], []
+    for entry in docker_entries:
+        image, ref = entry["image"], entry["ref"]
+        obj = entry["obj"]
+        hub = docker_hub_image(image)
+        if hub is None:
+            continue  # not a Docker Hub image — nothing to verify here
+        namespace, repo = hub
+        try:
+            if ref.startswith("sha256:"):
+                page = docker_hub_get(docker_hub_url(
+                    "/v2/repositories/%s/%s/tags?page_size=100"
+                    % (namespace, repo)))
+                if page is None:
+                    findings.append(make_finding(
+                        file, entry["line"], "PG-022", "high", obj,
+                        "Docker image %s does not exist on Docker Hub — "
+                        "the docker:// reference is bogus" % image,
+                        key_obj=obj + ":image-missing"))
+                    continue
+                digests = set()
+                for tag in page.get("results") or []:
+                    for img in tag.get("images") or []:
+                        if img.get("digest"):
+                            digests.add(img["digest"])
+                if ref not in digests:
+                    findings.append(make_finding(
+                        file, entry["line"], "PG-022", "high", obj,
+                        "Docker image %s pinned to digest %s, but Docker "
+                        "Hub has no such digest for this image — bogus "
+                        "pin" % (image, ref[:19]),
+                        key_obj=obj + ":digest-missing"))
+            elif ref:
+                tag = docker_hub_get(docker_hub_url(
+                    "/v2/repositories/%s/%s/tags/%s"
+                    % (namespace, repo, ref)))
+                if tag is None:
+                    findings.append(make_finding(
+                        file, entry["line"], "PG-022", "high", obj,
+                        "Docker image %s:%s does not exist on Docker Hub "
+                        "— the tag is wrong or the image was removed"
+                        % (image, ref),
+                        key_obj=obj + ":tag-missing"))
+            # No ref at all (docker://alpine) is PG-005 offline already.
+        except ValueError as exc:
+            notes.append("Docker Hub check skipped for %s: %s" % (image, exc))
+            break  # network trouble is run-wide — stop, don't spam
+    return findings, notes
 
 
 def tag_commit_sha(owner, repo, tag, cache):
@@ -1232,6 +1667,154 @@ def check_online(pinned, file, cache):
             notes.append("Online check skipped for %s: %s" % (action, exc))
             break  # network/rate-limit is run-wide — stop, don't spam
     return findings, notes
+
+
+def check_repo(repo_slug, cache):
+    """PG-023 / PG-024 / PG-025 — repository settings via the GitHub
+    API (--repo owner/repo). Opt-in and token-gated: without a
+    GITHUB_TOKEN nothing is checked — the caller gets a note saying
+    so, not a failure. Only reads settings of a repository the user
+    owns or has permission to audit; never changes anything.
+    Returns (findings, notes)."""
+    findings, notes = [], []
+    if "/" not in repo_slug or repo_slug.count("/") != 1:
+        notes.append("Bad --repo value %r — use owner/repo" % repo_slug)
+        return findings, notes
+    owner, repo = repo_slug.split("/")
+    if not os.environ.get("GITHUB_TOKEN"):
+        notes.append("Repo checks for %s: not checked — needs a token. "
+                     "Set GITHUB_TOKEN (classic token, no scopes needed) "
+                     "to check branch protection, Actions permissions "
+                     "and OIDC settings" % repo_slug)
+        return findings, notes
+    file = repo_slug
+    try:
+        info = github_api_get(gh_url("/repos/%s/%s" % (owner, repo)))
+    except ValueError as exc:
+        notes.append("Repo check skipped for %s: %s" % (repo_slug, exc))
+        return findings, notes
+    if info is None:
+        notes.append("Repo %s not found, or the token cannot see it"
+                     % repo_slug)
+        return findings, notes
+    branch = info.get("default_branch") or "main"
+    # PG-023 — branch protection on the default branch.
+    try:
+        protection = github_api_get(gh_url(
+            "/repos/%s/%s/branches/%s/protection" % (owner, repo, branch)))
+    except ValueError as exc:
+        notes.append("Branch protection check skipped: %s" % exc)
+        protection = "unknown"
+    if protection is None:
+        findings.append(make_finding(
+            file, 0, "PG-023", "high", "branch=%s" % branch,
+            "Default branch %s has no branch protection — anyone with "
+            "write access can push straight to it" % branch,
+            key_obj="branch=%s" % branch))
+    elif protection != "unknown":
+        reviews = (protection.get("required_pull_request_reviews")
+                   is not None)
+        checks = (protection.get("required_status_checks") is not None)
+        if not reviews and not checks:
+            findings.append(make_finding(
+                file, 0, "PG-023", "medium", "branch=%s" % branch,
+                "Branch protection on %s requires neither a pull request "
+                "review nor status checks — a single push can land "
+                "unreviewed" % branch,
+                key_obj="branch=%s" % branch))
+    # PG-024 — Actions permissions and default workflow permissions.
+    try:
+        perms = github_api_get(gh_url(
+            "/repos/%s/%s/actions/permissions" % (owner, repo)))
+        if perms is not None and perms.get("allowed_actions") == "all":
+            findings.append(make_finding(
+                file, 0, "PG-024", "high", "actions-permissions",
+                "Repository allows ALL third-party actions — any action "
+                "can run in this repo's workflows; restrict to selected "
+                "actions",
+                key_obj="actions-permissions"))
+        workflow_perms = github_api_get(gh_url(
+            "/repos/%s/%s/actions/permissions/workflow" % (owner, repo)))
+        if workflow_perms is not None:
+            if workflow_perms.get("default_workflow_permissions") == "write":
+                findings.append(make_finding(
+                    file, 0, "PG-024", "high", "workflow-permissions",
+                    "Default workflow permissions are write — every "
+                    "workflow gets a write-capable token unless it opts "
+                    "out; set the default to read",
+                    key_obj="workflow-permissions"))
+            if workflow_perms.get("can_approve_pull_request_reviews"):
+                findings.append(make_finding(
+                    file, 0, "PG-024", "medium", "workflow-permissions",
+                    "Workflows in this repo can approve pull request "
+                    "reviews — a compromised workflow can approve its "
+                    "own PR",
+                    key_obj="workflow-permissions:approve"))
+    except ValueError as exc:
+        notes.append("Actions permissions check skipped: %s" % exc)
+    # PG-025 — OIDC subject claim customisation. The default claim is
+    # scoped to a ref; a custom claim with no :ref: or :environment:
+    # qualifier is broad enough to be replayed from any ref.
+    try:
+        oidc = github_api_get(gh_url(
+            "/repos/%s/%s/actions/oidc/customization/sub" % (owner, repo)))
+    except ValueError as exc:
+        notes.append("OIDC check skipped: %s" % exc)
+        oidc = "unknown"
+    if oidc not in (None, "unknown"):
+        value = oidc.get("value") or ""
+        use_default = oidc.get("use_default", True)
+        if not use_default and value and (":ref:" not in value
+                                          and ":environment:" not in value):
+            findings.append(make_finding(
+                file, 0, "PG-025", "medium", "oidc-subject-claim",
+                "OIDC subject claim %r has no :ref: or :environment: "
+                "qualifier — a token minted for this repo is not bound "
+                "to a branch or environment" % value,
+                key_obj="oidc-subject-claim"))
+    return findings, notes
+
+
+def scan_repo(repo_slug, args):
+    """Run a --repo check on its own. Returns
+    (exit_code, findings, score, grade)."""
+    gh_cache = {}
+    findings, notes = check_repo(repo_slug, gh_cache)
+    score = score_findings(findings)
+    grade = grade_for(score)
+    stats = {"files": 0, "workflows": 0, "jenkinsfiles": 0,
+             "jobs": 0, "steps": 0}
+    if not args.quiet:
+        header("REPO CHECK")
+        info("Repository", repo_slug)
+        info("Token", "set" if os.environ.get("GITHUB_TOKEN")
+              else "not set — repo checks need a token")
+        sep()
+    print_summary(stats, findings, score, grade, quiet=args.quiet)
+    report = build_text_report(repo_slug, stats, findings, score, grade,
+                               notes)
+    with open(args.output, "w", encoding="utf-8") as fh:
+        fh.write(report)
+    ok("Report saved: %s" % args.output)
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(build_json_report(repo_slug, stats, findings, score,
+                                        grade, notes), fh, indent=2)
+        ok("JSON report saved: %s" % args.json)
+    for e in notes:
+        warn("Note: %s" % e)
+    if not findings:
+        return 0, findings, score, grade
+    if args.fail_on == "none":
+        return 1, findings, score, grade
+    if args.fail_on:
+        level = SEVERITY_ORDER[args.fail_on]
+        if any(SEVERITY_ORDER[f["severity"]] <= level for f in findings):
+            return 2, findings, score, grade
+        return 0, findings, score, grade
+    if summary_counts(findings)["critical"]:
+        return 2, findings, score, grade
+    return 1, findings, score, grade
 
 
 def check_permissions(data, file):
@@ -1374,23 +1957,210 @@ def check_misc_workflow(data, file, triggers):
 
 
 # ---------------------------------------------------------------- Jenkinsfile
+# v1.4 — a Jenkinsfile is now PARSED as Groovy, not just scanned as
+# text. parse_jenkinsfile() walks the file with brace matching and
+# tracks triple-quoted strings, so it reports the real pipeline
+# structure: stages (with names and lines), the steps inside each
+# stage, and whether an `input` step sits inside a `timeout` block.
+# Findings still name their exact line, but now also name their stage.
+STAGE_RE = re.compile(r"""\bstage\s*\(\s*['"]([^'"]+)['"]\s*\)""")
+STEP_KIND_RE = re.compile(
+    r"""^\s*(sh|bat|powershell|echo|input|timeout|withCredentials|script|"""
+    r"""parallel|node|retry|catchError)\b""")
+_BLOCK_KIND_RES = [
+    ("pipeline", re.compile(r"""\bpipeline\s*\{""")),
+    ("stages", re.compile(r"""\bstages\s*\{""")),
+    ("steps", re.compile(r"""\bsteps\s*\{""")),
+    ("environment", re.compile(r"""\benvironment\s*\{""")),
+    ("script", re.compile(r"""\bscript\s*\{""")),
+    ("post", re.compile(r"""\bpost\s*\{""")),
+    ("agent", re.compile(r"""\bagent\s*\{""")),
+    ("options", re.compile(r"""\boptions\s*\{""")),
+    ("parameters", re.compile(r"""\bparameters\s*\{""")),
+    ("tools", re.compile(r"""\btools\s*\{""")),
+    ("timeout", re.compile(r"""\btimeout\s*\(""")),
+    ("withCredentials", re.compile(r"""\bwithCredentials\s*\(""")),
+]
+
+
+def _strip_strings_and_comments(line, state):
+    """Remove string literals and // comments from one Jenkinsfile line
+    (for brace counting only — braces inside strings and comments are
+    not structure). `state` carries triple-quote state across lines:
+    {"dq3": bool, "sq3": bool}. Returns (code, new_state)."""
+    state = dict(state)
+    out = []
+    i, n = 0, len(line)
+    in_sq = in_dq = False
+    while i < n:
+        if state["dq3"]:
+            if line.startswith('"""', i):
+                state["dq3"] = False
+                i += 3
+            else:
+                i += 1
+            continue
+        if state["sq3"]:
+            if line.startswith("'''", i):
+                state["sq3"] = False
+                i += 3
+            else:
+                i += 1
+            continue
+        if in_sq:
+            if line[i] == "\\":
+                i += 2
+                continue
+            if line[i] == "'":
+                in_sq = False
+            i += 1
+            continue
+        if in_dq:
+            if line[i] == "\\":
+                i += 2
+                continue
+            if line[i] == '"':
+                in_dq = False
+            i += 1
+            continue
+        if line.startswith('"""', i):
+            state["dq3"] = True
+            i += 3
+            continue
+        if line.startswith("'''", i):
+            state["sq3"] = True
+            i += 3
+            continue
+        if line[i] == "'":
+            in_sq = True
+            i += 1
+            continue
+        if line[i] == '"':
+            in_dq = True
+            i += 1
+            continue
+        if line.startswith("//", i):
+            break  # rest of the line is a comment
+        out.append(line[i])
+        i += 1
+    return "".join(out), state
+
+
+def _block_kind(code):
+    """What kind of block a line opens (stage names included)."""
+    m = STAGE_RE.search(code)
+    if m:
+        return ("stage", m.group(1))
+    for kind, rx in _BLOCK_KIND_RES:
+        if rx.search(code):
+            return (kind, None)
+    if "{" in code:
+        return ("block", None)
+    return (None, None)
+
+
+def parse_jenkinsfile(lines):
+    """Parse a Jenkinsfile into its Groovy structure.
+    Returns {"stages": [...], "steps": [...], "balanced": bool}.
+    Each stage: {"name", "line", "end_line", "steps": [step, ...]}.
+    Each step: {"kind", "line", "stage", "in_timeout", "text"}.
+    Brace matching ignores braces inside strings and comments, and
+    triple-quoted sh blocks do not disturb the depth count."""
+    stages, steps = [], []
+    stack = []  # (kind, name, line) for each open { block
+    state = {"dq3": False, "sq3": False}
+    balanced = True
+    for lineno, raw in enumerate(lines, start=1):
+        code, state = _strip_strings_and_comments(raw, state)
+        # Stage names live inside quotes (stage('Build')) — the
+        # stripper above removes string contents, so catch the name
+        # on the raw line before it is stripped.
+        stage_m = STAGE_RE.search(raw)
+        stage_name = stage_m.group(1) if stage_m else None
+        stage_used = False
+        # A step on this line, before the braces are processed.
+        m = STEP_KIND_RE.match(code)
+        if m:
+            current_stage = None
+            for kind, name, _ln in reversed(stack):
+                if kind == "stage":
+                    current_stage = name
+                    break
+            in_timeout = any(kind == "timeout" for kind, _n, _l in stack)
+            step = {"kind": m.group(1), "line": lineno,
+                    "stage": current_stage, "in_timeout": in_timeout,
+                    "text": raw.strip()}
+            steps.append(step)
+            if current_stage is not None:
+                for st in stages:
+                    if st["name"] == current_stage and st["end_line"] is None:
+                        st["steps"].append(step)
+                        break
+        # Brace matching, left to right. Each { is classified from
+        # the code since the previous brace, so `stage('Build') {
+        # steps {` opens a stage block and then a steps block.
+        parts = re.split(r"([{}])", code)
+        for idx, part in enumerate(parts):
+            if part == "{":
+                if stage_name is not None and not stage_used:
+                    kind, name = "stage", stage_name
+                    stage_used = True
+                else:
+                    seg = parts[idx - 1] if idx > 0 else ""
+                    kind, name = _block_kind(seg)
+                    if kind is None:
+                        kind = "block"
+                stack.append((kind, name, lineno))
+                if kind == "stage":
+                    stages.append({"name": name, "line": lineno,
+                                   "end_line": None, "steps": []})
+            elif part == "}":
+                if not stack:
+                    balanced = False
+                    continue
+                kind, name, _ln = stack.pop()
+                if kind == "stage":
+                    for st in reversed(stages):
+                        if st["name"] == name and st["end_line"] is None:
+                            st["end_line"] = lineno
+                            break
+    if stack:
+        balanced = False
+    return {"stages": stages, "steps": steps, "balanced": balanced}
+
+
+def _stage_at(parsed, lineno):
+    """Stage name enclosing a line, or None (top-level / environment)."""
+    for st in parsed["stages"]:
+        end = st["end_line"] or lineno
+        if st["line"] <= lineno <= end:
+            return st["name"]
+    return None
+
+
 def check_jenkins_credentials(lines, file):
-    """PG-015 — hardcoded credentials, line by line."""
+    """PG-015 — hardcoded credentials, line by line. Each finding now
+    names the stage it sits in (from the Groovy parse), not just the
+    line — so a credential in the Build stage is distinguishable from
+    one in Deploy."""
+    parsed = parse_jenkinsfile(lines)
     text = "\n".join(lines)
     has_withcreds = bool(WITHCREDS_RE.search(text))
     findings = []
     for i, line in enumerate(lines, start=1):
+        stage = _stage_at(parsed, i)
+        obj = "stage=%s:line=%d" % (stage or "top-level", i)
         for rule, sev, rx, msg in JENKINS_PATTERNS:
             if rx.search(line):
                 findings.append(make_finding(
-                    file, i, rule, sev, "line=%d" % i, msg,
+                    file, i, rule, sev, obj, msg,
                     key_obj="pattern=%s" % rx.pattern[:40]))
         if (not has_withcreds
                 and re.search(r"\$[A-Z_][A-Z0-9_]*", line)
                 and SECRET_NAME_RE.search(line)):
             findings.append(make_finding(
                 file, i, "PG-015", "medium",
-                "line=%d" % i,
+                obj,
                 "Secret-like variable used with no withCredentials block "
                 "in this Jenkinsfile — where does its value come from?",
                 key_obj="pattern=no-withcredentials"))
@@ -1402,18 +2172,25 @@ def check_jenkins_shell(lines, file):
     A small state machine tracks multi-line sh \"\"\"...\"\"\" blocks:
     ${...} inside a double-quoted block is Groovy interpolation (the
     Jenkins equivalent of GitHub's ${{ }} injection); inside a
-    single-quoted block it is not."""
+    single-quoted block it is not. Whether an `input` step has a
+    timeout is now decided by the Groovy parse (is the input inside a
+    timeout { } block?), not by a +-5-line text window — the old
+    heuristic false-positived on the correct pattern, where timeout
+    WRAPS input from above."""
+    parsed = parse_jenkinsfile(lines)
     findings = []
     in_dq_block = False
     in_sq_block = False
     for i, line in enumerate(lines, start=1):
+        stage = _stage_at(parsed, i)
+        obj = "stage=%s:line=%d" % (stage or "top-level", i)
         if in_dq_block:
             if '"""' in line:
                 in_dq_block = False
             m = re.search(r"\$\{[^}]+\}", line)
             if m:
                 findings.append(make_finding(
-                    file, i, "PG-016", "high", "line=%d" % i,
+                    file, i, "PG-016", "high", obj,
                     "Groovy ${...} interpolated inside a multi-line "
                     "double-quoted sh block — use single quotes and pass "
                     "values via env",
@@ -1428,7 +2205,7 @@ def check_jenkins_shell(lines, file):
             m = re.search(r"\$\{[^}]+\}", line)
             if m:
                 findings.append(make_finding(
-                    file, i, "PG-016", "high", "line=%d" % i,
+                    file, i, "PG-016", "high", obj,
                     "Groovy ${...} interpolated inside a double-quoted "
                     "sh block — use single quotes and pass values via env",
                     key_obj="pattern=sh-dq-block"))
@@ -1438,28 +2215,24 @@ def check_jenkins_shell(lines, file):
             continue
         if SH_DQ_INTERP_RE.search(line):
             findings.append(make_finding(
-                file, i, "PG-016", "high", "line=%d" % i,
+                file, i, "PG-016", "high", obj,
                 "Groovy ${...} interpolated inside a double-quoted sh "
                 "string — use single quotes and pass values via env",
                 key_obj="pattern=sh-dq-interp"))
         if DOCKER_SOCK_RE.search(line) and "sh" in line:
             findings.append(make_finding(
-                file, i, "PG-016", "high", "line=%d" % i,
+                file, i, "PG-016", "high", obj,
                 "Docker socket mounted into a build step — the step is "
                 "root on the host",
                 key_obj="pattern=docker-sock"))
-    # input without timeout: look for 'input' with no 'timeout' within
-    # ~5 lines either side — timeout usually WRAPS input (above it), so
-    # a forward-only window false-positives on the correct pattern.
-    # Heuristic — say so in the report.
-    text = "\n".join(lines)
-    split = text.split("\n")
-    for m in re.finditer(r"(?m)^\s*input\b.*$", text):
-        start = text[:m.start()].count("\n")
-        block = "\n".join(split[max(0, start - 5):start + 6])
-        if "timeout" not in block:
+    # input without timeout: the parse knows whether each input step
+    # sits inside a timeout { } block — no line window, no guessing.
+    for step in parsed["steps"]:
+        if step["kind"] == "input" and not step["in_timeout"]:
+            obj = "stage=%s:line=%d" % (step["stage"] or "top-level",
+                                        step["line"])
             findings.append(make_finding(
-                file, start + 1, "PG-017", "low", "line=%d" % (start + 1),
+                file, step["line"], "PG-017", "low", obj,
                 "input step without a timeout — a build can hang forever "
                 "waiting for approval",
                 key_obj="pattern=input-no-timeout"))
@@ -1467,7 +2240,8 @@ def check_jenkins_shell(lines, file):
 
 
 # ---------------------------------------------------------------- orchestrate
-def check_workflow(data, file, strict=False, raw_lines=None, pinned_out=None):
+def check_workflow(data, file, strict=False, raw_lines=None, pinned_out=None,
+                   docker_out=None, online_checker=None):
     """Run every workflow check over one parsed workflow."""
     triggers = normalise_triggers(data)
     findings = []
@@ -1475,8 +2249,9 @@ def check_workflow(data, file, strict=False, raw_lines=None, pinned_out=None):
     findings += check_injection(data, file, triggers)
     findings += check_secret_echo(data, file)
     findings += check_pinning(data, file, strict=strict,
-                              raw_lines=raw_lines, pinned_out=pinned_out)
-    findings += check_typosquat(data, file)
+                              raw_lines=raw_lines, pinned_out=pinned_out,
+                              docker_out=docker_out)
+    findings += check_typosquat(data, file, online_checker=online_checker)
     findings += check_permissions(data, file)
     findings += check_misc_workflow(data, file, triggers)
     return findings
@@ -1523,6 +2298,9 @@ def scan_one_file(path, display, strict=False, verify_online=False,
         stats["jenkinsfiles"] = 1
         findings += check_jenkins_credentials(lines, display)
         findings += check_jenkins_shell(lines, display)
+        if not parse_jenkinsfile(lines)["balanced"]:
+            errors.append("Jenkinsfile braces do not balance in %s — "
+                          "the stage structure may be incomplete" % display)
         return findings, errors, stats
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -1546,12 +2324,22 @@ def scan_one_file(path, display, strict=False, verify_online=False,
         len(job.get("steps") or [])
         for _k, job in items(jobs) if isinstance(job, dict))
     pinned = []
+    docker_entries = []
+    online_checker = (typosquat_online_checker(gh_cache or {})
+                      if verify_online else None)
     findings += check_workflow(data, display, strict=strict,
                                raw_lines=text.splitlines(),
-                               pinned_out=pinned)
+                               pinned_out=pinned,
+                               docker_out=docker_entries,
+                               online_checker=online_checker)
     if verify_online and pinned:
         online, notes = check_online(pinned, display, gh_cache or {})
         findings += online
+        errors.extend(notes)
+    if verify_online and docker_entries:
+        docker_findings, notes = check_docker_online(
+            docker_entries, display, gh_cache or {})
+        findings += docker_findings
         errors.extend(notes)
     return findings, errors, stats
 
@@ -1701,6 +2489,10 @@ def scan_path(path, args):
             info("Baseline write", args.baseline_write)
         if getattr(args, "verify_online", False):
             info("Online SHA check", "on (PG-020, GitHub API)")
+            cache_path, _n = cache_stats()
+            info("API cache", cache_path or "disabled (--no-cache)")
+        if getattr(args, "repo", None):
+            info("Repo settings check", args.repo)
         sep()
     findings, errors = [], []
     stats = {"files": len(files), "workflows": 0, "jenkinsfiles": 0,
@@ -1719,6 +2511,12 @@ def scan_path(path, args):
         for k in stats:
             if k != "files":
                 stats[k] += s[k]
+    # --repo: repository settings (PG-023/024/025) join the same
+    # report, score and exit code as the file findings.
+    if getattr(args, "repo", None):
+        repo_findings, repo_notes = check_repo(args.repo, gh_cache)
+        findings.extend(repo_findings)
+        errors.extend(repo_notes)
     findings.sort(key=lambda f: (f["file"], f["line"],
                                  SEVERITY_ORDER[f["severity"]]))
     score = score_findings(findings)
@@ -1822,6 +2620,7 @@ MENU_OPTIONS = [
     (6, "Run step tests", "test"),
     (7, "Check setup (doctor)", "doctor"),
     (8, "Scan with online SHA verification (--verify-online)", "online"),
+    (9, "Check repository settings online (--repo, needs token)", "repo"),
     (0, "Exit", None),
 ]
 
@@ -1863,10 +2662,19 @@ def show_structure(path):
         if is_jenkinsfile(full):
             try:
                 with open(full, encoding="utf-8", errors="replace") as fh:
-                    n = len(fh.read().splitlines())
+                    lines = fh.read().splitlines()
             except OSError:
-                n = 0
-            info("Jenkinsfile", "%s (%d lines)" % (display, n))
+                lines = []
+            parsed = parse_jenkinsfile(lines)
+            print(f" {C.BOLD}{display}{C.RESET}")
+            info("Jenkinsfile", "%d lines, %d stage(s)%s"
+                 % (len(lines), len(parsed["stages"]),
+                    "" if parsed["balanced"] else " (braces unbalanced!)"))
+            for st in parsed["stages"]:
+                print("   Stage %s: %d step(s), line %s"
+                      % (st["name"], len(st["steps"]), st["line"]))
+                for step in st["steps"]:
+                    print("     - %s (line %s)" % (step["kind"], step["line"]))
             continue
         try:
             with open(full, encoding="utf-8", errors="replace") as fh:
@@ -1911,6 +2719,12 @@ def doctor():
     else:
         info("GITHUB_TOKEN", "not set — online SHA checks use 60 req/hour "
              "unauthenticated (enough for a few workflows)")
+    # API cache (v1.4): repeat runs reuse cached responses.
+    cache_path, cache_n = cache_stats()
+    if cache_path:
+        info("API cache", "%s (%d entries)" % (cache_path, cache_n))
+    else:
+        info("API cache", "disabled")
     if yaml is None:
         warn("Doctor: something is missing (see [!] lines above).")
         return 1
@@ -1959,6 +2773,14 @@ def menu(args):
                 args.verify_online = True
                 code, _f, _s, _g = menu_scan(args, ".", "pipesentry_report.txt")
                 print("Exit code: %d" % code)
+            elif choice == "9":
+                slug = ask("ENTER REPOSITORY (owner/repo)", "")
+                if slug:
+                    args.output = "repo_report.txt"
+                    code, _f, _s, _g = scan_repo(slug, args)
+                    print("Exit code: %d" % code)
+                else:
+                    err("No repository given.")
             elif choice == "4":
                 path = ask("ENTER FOLDER OR FILE", bad)
                 show_structure(path or bad)
@@ -1970,7 +2792,7 @@ def menu(args):
             elif choice == "7":
                 doctor()
             else:
-                err("Please input a number from the menu (0-8).")
+                err("Please input a number from the menu (0-9).")
                 time.sleep(1)
                 continue
         except (EOFError, KeyboardInterrupt):
@@ -2018,6 +2840,16 @@ def build_parser():
                    help="verify pinned SHAs against GitHub (PG-020): SHA vs "
                    "its # vX.Y.Z tag, and SHA exists upstream; needs "
                    "internet (GITHUB_TOKEN raises the 60/hr limit)")
+    p.add_argument("--repo", default=None, metavar="OWNER/REPO",
+                   help="also check repository settings online (PG-023 "
+                   "branch protection, PG-024 Actions permissions, PG-025 "
+                   "OIDC subject claim); needs GITHUB_TOKEN, otherwise "
+                   "reports 'not checked — needs a token'")
+    p.add_argument("--cache-file", default=None, metavar="FILE",
+                   help="API response cache file (default "
+                   "~/.cache/pipesentry/api_cache.json)")
+    p.add_argument("--no-cache", action="store_true",
+                   help="do not read or write the API response cache")
     p.add_argument("--structure", action="store_true",
                    help="print the parsed structure and exit")
     p.add_argument("--list-checks", action="store_true",
@@ -2039,6 +2871,10 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.no_color:
         C.disable()
+    if getattr(args, "cache_file", None):
+        os.environ["PIPE_SENTRY_CACHE_FILE"] = args.cache_file
+    if getattr(args, "no_cache", False):
+        os.environ["PIPE_SENTRY_NO_CACHE"] = "1"
     if args.version:
         print("PipeSentry %s" % VERSION)
         return 0
@@ -2051,6 +2887,10 @@ def main(argv=None):
             return 2
         show_structure(args.path)
         return 0
+    if args.repo and args.path is None and not args.interactive:
+        # Repo-only mode: no pipeline files, just repository settings.
+        code, _f, _s, _g = scan_repo(args.repo, args)
+        return code
     if args.interactive or args.path is None:
         return menu(args)
     code, _findings, _score, _grade = scan_path(args.path, args)
